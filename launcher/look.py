@@ -39,11 +39,11 @@ def theme(root):
     style.configure(".", background=BG, foreground=INK, bordercolor=LINE, font=(body, 10))
     style.configure("TButton", background=PANEL, foreground=INK, borderwidth=1,
                     lightcolor=PANEL, darkcolor=PANEL, focuscolor=CYAN, padding=(13, 8))
-    style.map("TButton", background=[("disabled", RAIL), ("pressed", LINE), ("active", "#222a66")],
+    style.map("TButton", background=[("disabled", RAIL), ("pressed", LINE), ("focus", SELECTED), ("active", "#222a66")],
               foreground=[("disabled", DISABLED)], bordercolor=[("focus", CYAN), ("active", "#5a6bd0")])
     style.configure("Play.TButton", background=RED, foreground=BG, padding=(23, 12),
                     lightcolor=RED, darkcolor=RED, bordercolor=RED, font=(heading, 13, "bold"))
-    style.map("Play.TButton", background=[("disabled", PANEL), ("pressed", "#e03a74"), ("active", "#ff77a5")],
+    style.map("Play.TButton", background=[("disabled", PANEL), ("pressed", "#e03a74"), ("focus", "#ff8fb5"), ("active", "#ff77a5")],
               foreground=[("disabled", DISABLED)], bordercolor=[("focus", INK)])
     style.configure("TEntry", fieldbackground=ENTRY, insertcolor=INK, padding=(8, 5))
     style.configure("TCombobox", fieldbackground=ENTRY, arrowcolor=CYAN, padding=(7, 5))

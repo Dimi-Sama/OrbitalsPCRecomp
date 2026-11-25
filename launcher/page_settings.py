@@ -3,7 +3,7 @@
 
 import re
 
-from . import graphics
+from . import dialogs, graphics, navigation
 from .core import DEFAULT_SETTINGS, LOG, WINDOWS, LauncherError, gamepad_inventory, graphics_settings
 from .look import native_size
 from .neo import motion_allowed
@@ -121,7 +121,7 @@ class GraphicsPage(SettingsPage):
         return (text, "Borderless uses the monitor's desktop resolution.") if self.app.settings()["display"] == "Borderless" else text
 
     def other_size(self):
-        text = self.app.ask_text("Window size", "Width x height, for example 1440x900", self.app.settings()["size"].replace("×", "x"))
+        text = dialogs.ask_text(self.app.root, "Window size", "Width x height, for example 1440x900", self.app.settings()["size"], valid_size)
         if text is not None:
             self.app.action(lambda: self.app.keep(size=valid_size(text)))
 
@@ -204,6 +204,11 @@ class GeneralPage(SettingsPage):
         rows.switch("Title screen animation", lambda: bool(app.profiles.data.get("animate", True)), lambda v: app.profiles.update(animate=v),
                     lambda: "The stars of the title screen. They never move while the game runs."
                     + ("" if motion_allowed() else "\n\nYour system's animations are off, so they stay still."), default=(True,))
+        rows.choice("Controller in the launcher", tuple(navigation.MODES), lambda: app.profiles.data.get("pad_navigation", "auto"),
+                    lambda mode: app.profiles.update(pad_navigation=mode),
+                    "A controller drives the launcher: the directions choose, A takes, B goes back, the shoulders change the tab, Start plays.\n\n"
+                    "Automatic is on, but not on the Steam Deck's desktop, where Steam already turns its controls into keys and a mouse.",
+                    show=navigation.MODES.get, default=("auto",))
         rows.group("Updates")
         rows.switch("Check for updates at start", lambda: bool(app.profiles.data.get("update_check", True)),
                     lambda v: app.profiles.update(update_check=v),

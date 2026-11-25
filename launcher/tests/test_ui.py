@@ -21,7 +21,7 @@ from launcher.tests.test_launcher import build_fixture
 PAGES = ("Home", "Profiles", "Graphics", "Controls", "Settings", "Files", "Tools")
 
 
-class LauncherWindowTest(unittest.TestCase):
+class LauncherWindow(unittest.TestCase):
     def setUp(self):
         try:
             self.tk = tk.Tk()
@@ -34,25 +34,6 @@ class LauncherWindowTest(unittest.TestCase):
         # no network while the pages are built
         for name in ("check_update",):
             p = patch.object(ui, name, return_value=None); p.start(); self.addCleanup(p.stop)
-
-    def build(self, game=None):
-        local = self.root / "local"
-        local.mkdir(exist_ok=True)
-        with core.setup_logging(local):
-            app = Launcher(self.tk, local, game)
-            for page in PAGES:
-                with self.subTest(page=page, game=bool(game)):
-                    app.show(page)
-                    self.tk.update_idletasks()
-
-    def test_every_page_builds_without_a_game(self):
-        self.build()
-
-    def test_every_page_builds_with_an_installation(self):
-        native = self.root / "game"
-        build_fixture(native)
-        self.build(native)
-
 
     def window(self, size="1160x755", game=True):
         """A launcher with a fixture installation, shown, with no update check."""
@@ -80,6 +61,30 @@ class LauncherWindowTest(unittest.TestCase):
 
     def title(self, app):
         return next(w for w in app.page.winfo_children() if isinstance(w, TitleScreen))
+
+    def row(self, app, caption):
+        return next(row for row in app.view.rows.items if row.caption == caption)
+
+
+class LauncherWindowTest(LauncherWindow):
+    def build(self, game=None):
+        local = self.root / "local"
+        local.mkdir(exist_ok=True)
+        with core.setup_logging(local):
+            app = Launcher(self.tk, local, game)
+            for page in PAGES:
+                with self.subTest(page=page, game=bool(game)):
+                    app.show(page)
+                    self.tk.update_idletasks()
+
+    def test_every_page_builds_without_a_game(self):
+        self.build()
+
+    def test_every_page_builds_with_an_installation(self):
+        native = self.root / "game"
+        build_fixture(native)
+        self.build(native)
+
 
     def test_title_entries_are_enabled_again_after_any_job(self):
         app = self.window()
@@ -152,7 +157,7 @@ class LauncherWindowTest(unittest.TestCase):
         def fails():
             raise core.LauncherError("The disk is full.")
 
-        with patch.object(ui.messagebox, "showerror") as dialog:
+        with patch.object(ui.dialogs, "error") as dialog:
             app.background("Installing…", fails, None, demo="RECOMPILING ORBITALS", retry=lambda: tried.append(1))
             self.spin(0.5)
         dialog.assert_not_called()
@@ -228,7 +233,7 @@ class LauncherWindowTest(unittest.TestCase):
                 time.sleep(0.02)
             raise Stopped("The installation was stopped. What is compiled is kept.")
 
-        with patch.object(ui, "install_from_files", side_effect=setup), patch.object(ui.messagebox, "askyesno", return_value=False) as ask:
+        with patch.object(ui, "install_from_files", side_effect=setup), patch.object(ui.dialogs, "confirm", return_value=False) as ask:
             app.start_install(); self.spin(0.1)
             app.stop_job()
             self.assertFalse(app.task.stopped, "not confirmed")
@@ -252,7 +257,7 @@ class LauncherWindowTest(unittest.TestCase):
         app = self.window()
         app.show("Profiles")
         self.assertFalse(self.row(app, "Delete this profile").on, "the only one")
-        with patch.object(app, "ask_text", return_value="Second"):
+        with patch.object(page_tools.dialogs, "ask_text", return_value="Second"):
             self.row(app, "New profile").press()
         active = self.row(app, "Active profile")
         self.assertEqual(active.value.cget("text"), "Second")
@@ -297,7 +302,7 @@ class LauncherWindowTest(unittest.TestCase):
     def test_controller_scan_neither_blocks_saving_nor_loops_on_errors(self):
         app = self.window()
         with patch.object(page_settings, "gamepad_inventory", side_effect=RuntimeError("unexpected")) as scan, \
-                patch.object(ui.messagebox, "showerror") as dialog:
+                patch.object(ui.dialogs, "error") as dialog:
             app.show("Controls")
             self.assertIsNone(app.job)
             app.keep(keyboard=2)
@@ -305,9 +310,6 @@ class LauncherWindowTest(unittest.TestCase):
         self.assertEqual(scan.call_count, 1)
         dialog.assert_not_called()
         self.assertEqual(app.profiles.settings["keyboard"], 2)
-
-    def row(self, app, caption):
-        return next(row for row in app.view.rows.items if row.caption == caption)
 
     def test_settings_are_kept_as_they_change(self):
         app = self.window()

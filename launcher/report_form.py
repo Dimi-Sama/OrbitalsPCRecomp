@@ -2,8 +2,9 @@
 """The bug report's windows: the form, its preview, and a read-only text window."""
 
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import ttk
 
+from . import dialogs
 from .core import LauncherError, latest_run
 from .look import BG, CYAN, ENTRY, INK, LINE, MUTED, PEACH, label, text_box
 from .reports import ISSUE_TYPES, create_report, report_saves
@@ -21,6 +22,11 @@ def show_text(parent, title, content):
     box.pack(fill="both", expand=True, padx=12, pady=12)
     box.insert("1.0", content)
     box.configure(state="disabled")
+    for key, lines in (("<Up>", -3), ("<Down>", 3)):
+        box.bind(key, lambda e, lines=lines: box.yview_scroll(lines, "units"))
+    for key in ("<Escape>", "<Return>"):
+        box.bind(key, lambda e: view.destroy())
+    box.focus_set()
     return view
 
 
@@ -35,6 +41,7 @@ class ReportForm:
         self.window.grab_set()
         self.busy = False
         self.window.protocol("WM_DELETE_WINDOW", self.close)
+        self.window.bind("<Escape>", lambda e: self.close())
         body = tk.Frame(self.window, bg=BG)
         body.pack(fill="both", expand=True, padx=16, pady=13)
         label(body, "Report a problem", size=20, bold=True).pack(anchor="w")
@@ -208,8 +215,8 @@ class ReportForm:
             self.status.set("Issue text copied.")
 
         def write():
-            if any(name.startswith("saves/") for name in names) and not messagebox.askyesno(
-                    "Confirm the saves", "Include these binary copies in the local ZIP?", parent=view):
+            if any(name.startswith("saves/") for name in names) and not dialogs.confirm(
+                    view, "Confirm the saves", "Include these binary copies in the local ZIP?", yes="Include them"):
                 return
             destination = report.write(self.app.local / "reports")
             self.status.set(f"ZIP created · {destination.name}")

@@ -29,8 +29,12 @@ python3 -B -m tkinter     # checks that Tk works (Debian / Ubuntu: the python3-t
 python3 -B -m launcher
 ```
 
-On the Steam Deck, use the desktop mode with Python and Tk available; a controller can drive it through Steam Input's keyboard and mouse
-mappings (the launcher has no native gamepad navigation).
+On the Steam Deck, use the desktop mode with Python and Tk available for the installation (choosing a folder opens the system's own
+dialog). **TOOLS → Add to Steam** then starts the launcher from Gaming Mode.
+
+A controller drives the launcher (SDL3, SDL2 or XInput): the directions choose, A takes, B goes back, the shoulders change the settings'
+tab and Start plays. Only while its window is in front and no game runs. **General → Controller in the launcher** turns it off;
+*Automatic* leaves it off on the Deck's desktop, where Steam Input already turns the controls into keys and a mouse.
 
 `--game-dir` selects a local build explicitly. `--data-dir` uses another folder for profiles and reports. By default the launcher keeps
 its data in `%LOCALAPPDATA%/OrbitalsLauncher` on Windows, and in `$XDG_DATA_HOME/orbitals-launcher` or `~/.local/share/orbitals-launcher`

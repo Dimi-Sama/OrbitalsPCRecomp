@@ -168,7 +168,8 @@ class TitleScreen(tk.Canvas):
 
     # ---- drawing ----
     def _start(self):
-        self.focus_set()
+        if self.grab_current() is None:   # (not from under a dialog)
+            self.focus_set()
         if not self.running:
             self.running = True; self.timer = self.after(FRAME_MS, self._tick)
 
@@ -370,10 +371,10 @@ class TitleScreen(tk.Canvas):
             left, top, right, bottom = self.selected.box
             self.create_rectangle(left - px(3), top - px(3), right + px(3), bottom + px(3), outline=INK, width=px(2), tags="spots")
 
-    def set_pads(self, text, connected):
-        """The controllers changed: their line alone."""
+    def set_pads(self, text, connected, footer):
+        """The controllers changed: their line, and what the footer says about the keys."""
         if self.pads_spot and (text, connected) != self.pads[:2]:
-            self.pads = (text, connected, self.pads[2])
+            self.pads, self.footer = (text, connected, self.pads[2]), footer
             self._draw()
 
     def _moving(self):

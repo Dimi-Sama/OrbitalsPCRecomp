@@ -4,9 +4,9 @@
 import tempfile
 import webbrowser
 from pathlib import Path
-from tkinter import filedialog, messagebox
+from tkinter import filedialog
 
-from . import steam
+from . import dialogs, steam
 from .core import RELEASES_URL, latest_run, runtime_info, setup_log
 from .rows import Rows
 
@@ -49,15 +49,18 @@ class ProfilesPage(RowsPage):
 
     def name(self, title, value, keep):
         self.app.guard()
-        name = self.app.ask_text(title, "Name (1 to 32 characters)", value)
+        profiles = self.app.profiles
+        exclude = profiles.active if value else None   # (its own name may stay)
+        name = dialogs.ask_text(self.app.root, title, "Name (1 to 32 characters)", value,
+                                check=lambda text: profiles.validate_name(text, exclude=exclude))
         if name is not None:
             keep(name)
 
     def delete(self):
         self.app.guard()
         name = self.app.profiles.profile["name"]
-        if messagebox.askyesno("Delete the profile", f"Remove {name} from the list? Its files are kept in archived-profiles.",
-                               parent=self.app.root):
+        if dialogs.confirm(self.app.root, "Delete the profile", f"Remove {name} from the list? Its files are kept in archived-profiles.",
+                           yes="Remove", alarm=True):
             self.app.profiles.archive()
 
     def copy(self, operation):
@@ -66,7 +69,7 @@ class ProfilesPage(RowsPage):
     def restore(self):
         self.app.guard()
         path = filedialog.askdirectory(parent=self.app.root, title="Folder to import into the active profile")
-        if path and messagebox.askyesno("Restore the saves", "Replace the active saves? A copy of them is kept.", parent=self.app.root):
+        if path and dialogs.confirm(self.app.root, "Restore the saves", "Replace the active saves? A copy of them is kept.", yes="Replace"):
             self.copy(lambda: self.app.profiles.restore(Path(path)))
 
     def export(self):

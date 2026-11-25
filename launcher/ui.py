@@ -8,15 +8,16 @@ import threading
 import tkinter as tk
 import webbrowser
 from pathlib import Path
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, ttk
 
-from . import VERSION
+from . import VERSION, dialogs
 from .core import (DEFAULT_SETTINGS, LOG, REPO, WINDOWS, LauncherError, Profiles, carry_saves, check_update, detect_installation,
                    download_update, finish_session, game_source, install_fraction, install_from_files, installation, json_bytes,
                    latest_run, launch, launch_kit, outdated_release, prepare_shaders, runtime_info, setup_log, shader_preparation,
                    source_lacks, validate_settings)
 from .demo import DemoScreen
 from .look import BG, CYAN, MUTED, PEACH, RED, ScrollPage, label, px, theme
+from .navigation import Navigation, wanted
 from .neo import Card, HeaderStrip, TitleScreen
 from .pads import Pads
 from .page_files import FilesPage
@@ -69,7 +70,7 @@ class Launcher:
         self.events = queue.Queue()
         self.calls = queue.Queue()   # functions other threads want run on this one (post)
         self.pending = {}            # settings changed and not written yet (keep, flush)
-        self.flush_timer = None
+        self.flush_timer = self.game_timer = None
         self.font, self.heading_font = theme(root)
         assets = Path(__file__).with_name("assets")
         self.icon = tk.PhotoImage(file=str(assets / "orbitals-icon.png"))
@@ -97,6 +98,8 @@ class Launcher:
         self.pads = Pads([*((self.game.root,) if self.game else ()), REPO / "bin"])
         self.pad_names = None
         self.pads_timer = root.after(50, self.watch_pads)
+        self.navigation = Navigation(self)
+        self.navigation.tick()
         self.build_shell()
         self.show("Home")
         self.pump()
@@ -105,7 +108,7 @@ class Launcher:
 
     def closed(self, event):
         if event.widget is self.root:
-            for timer in filter(None, (self.pump_timer, self.pads_timer, self.flush_timer)):
+            for timer in filter(None, (self.pump_timer, self.pads_timer, self.flush_timer, self.navigation.timer, self.game_timer)):
                 self.root.after_cancel(timer)
             self.pads.close()
 
@@ -123,7 +126,7 @@ class Launcher:
             if screen and screen.pads_spot is None:   # the first answer: its line is there from now on
                 self.show("Home")
             elif screen:
-                screen.set_pads(*self.pads_line())
+                screen.set_pads(*self.pads_line(), self.keys_line())
         self.pads_timer = self.root.after(1000, self.watch_pads)
 
     def pads_line(self):
@@ -132,6 +135,10 @@ class Launcher:
             return "No controller connected", False
         more = f" and {len(names) - 2} more" if len(names) > 2 else ""
         return (f"{len(names)} controllers: " if len(names) > 1 else "") + ", ".join(names[:2]) + more, True
+
+    def keys_line(self):
+        pads = self.pad_names and wanted(self.profiles.data.get("pad_navigation", "auto"))
+        return ("A: choose  ·  Start: play" if pads else "Arrows, Enter: choose  ·  F11: full screen") + f"  ·  v{VERSION}"
 
     def title_screen(self):
         return next((w for w in self.page.winfo_children() if isinstance(w, TitleScreen)), None) if self.active_page == "Home" else None
@@ -151,13 +158,13 @@ class Launcher:
         self.calls.put(function)
 
     def pump(self):
+        self.pump_timer = self.root.after(90, self.pump)   # (first: a function can open a dialog, which waits)
         while True:
             try:
                 function = self.calls.get_nowait()
             except queue.Empty:
                 break
             self.action(function)
-        self.pump_timer = self.root.after(90, self.pump)
 
     def probe(self, worker, done):
         """A short question asked on a worker thread, whose answer goes to done. Unlike background(), nothing waits for it."""
@@ -214,9 +221,6 @@ class Launcher:
                 f"For {self.profiles.profile['name']}. Changes are saved as you make them and apply when you press PLAY.")
         label(self.note_bar, text, color=PEACH if self.process else MUTED).pack(anchor="w")
 
-    def ask_text(self, title, prompt, value=""):
-        return simpledialog.askstring(title, prompt, parent=self.root, initialvalue=value)
-
     @staticmethod
     def open_folder(path):
         open_folder(path)
@@ -233,6 +237,18 @@ class Launcher:
     def focus_header(self):
         if self.header:
             self.header.focus_set()
+
+    def focus_main(self):
+        """Nothing has the focus: what a page gives it to when it opens."""
+        screen = self.title_screen()
+        if dialogs.open_dialogs:
+            dialogs.open_dialogs[-1].refocus()
+        elif screen:
+            screen.focus_set()
+        elif self.header:
+            self.focus_page()
+        else:   # a job's demo
+            self.stop_button.focus_set()
 
     def focus_page(self):
         """From the header down to the page: its selected row, or its first widget."""
@@ -275,8 +291,7 @@ class Launcher:
                 if carry_saves(old, game):
                     self.page_state.set("Saves copied from the previous installation.")
             except OSError as error:
-                messagebox.showwarning("Saves", f"The saves could not be copied ({error}). They are still in {old.saves}.",
-                                       parent=self.root)
+                dialogs.error(self.root, "Saves", f"The saves could not be copied ({error}). They are still in {old.saves}.")
             self.installed(game)
 
         self.background("Recompiling…",
@@ -365,7 +380,7 @@ class Launcher:
 
     def callback_error(self, error_type, error, stack):
         LOG.error("event=ui_error type=%s", error_type.__name__)
-        messagebox.showerror("Liftoff", str(error), parent=self.root)
+        dialogs.error(self.root, "Something went wrong", str(error) or error_type.__name__)
 
     def action(self, callback):
         try:
@@ -373,7 +388,7 @@ class Launcher:
         except (OSError, LauncherError, subprocess.SubprocessError, tk.TclError) as error:
             LOG.error("event=action_failed type=%s", type(error).__name__)
             self.copy_from(error)
-            messagebox.showerror("Liftoff", str(error), parent=self.root)
+            dialogs.error(self.root, "That did not work", str(error))
 
     def copy_from(self, error):
         """An error that carries a command (a package install): on the clipboard, ready to paste in a terminal."""
@@ -392,6 +407,8 @@ class Launcher:
     def button(self, parent, title, callback, *, style="TButton"):
         button = ttk.Button(parent, text=title, style=style, command=lambda: self.action(callback))
         button.bind("<Return>", lambda _: button.invoke())
+        for key, x, y in (("<Left>", -1, 0), ("<Right>", 1, 0), ("<Up>", 0, -1), ("<Down>", 0, 1)):
+            button.bind(key, lambda e, x=x, y=y: dialogs.toward(button, x, y, button.winfo_toplevel()) and "break")
         return button
 
     def build_shell(self):
@@ -424,12 +441,24 @@ class Launcher:
     SUBSCREENS = {"Profiles": "PROFILES", "Files": "GAME FILES", "Tools": "TOOLS"}
 
     def next_tab(self, direction):
+        if dialogs.open_dialogs:
+            return "break"
         names = [name for name, _ in self.TABS]
         if self.active_page in names:
             self.show(names[(names.index(self.active_page) + direction) % len(names)])
         return "break"
 
     def show(self, name):
+        self.build(name)
+        self.keep_dialog()
+
+    @staticmethod
+    def keep_dialog():
+        """A job ended under a question: the question keeps the keys."""
+        if dialogs.open_dialogs:
+            dialogs.open_dialogs[-1].refocus()
+
+    def build(self, name):
         self.flush()
         for row in getattr(getattr(self.view, "rows", None), "items", ()):   # what is being typed is not lost
             if isinstance(row, TextRow):
@@ -482,12 +511,13 @@ class Launcher:
         self.root.update_idletasks()
         self.view.rows.choose(chosen)
         self.scroll.view.yview_moveto(place)
+        self.keep_dialog()
 
     def build_job_bar(self):
         """Under a long task's demo: its time, the other pages, and Stop."""
         bar = tk.Frame(self.page, bg=BG)
         bar.pack(side="bottom", fill="x", padx=px(18), pady=(px(8), 0))
-        stop = self.button(bar, "Stopping…" if self.task.stopped else "Stop", self.stop_job)
+        self.stop_button = stop = self.button(bar, "Stopping…" if self.task.stopped else "Stop", self.stop_job)
         stop.pack(side="right")
         if not self.stoppable or self.task.stopped:
             stop.state(["disabled"])
@@ -522,7 +552,7 @@ class Launcher:
         tags = [game_tag, *((shader_tag,) if self.game else ()), ("PROFILE", self.profiles.profile["name"], RED, lambda: self.show("Profiles"))]
         pads = (*self.pads_line(), lambda: self.show("Controls")) if self.pad_names is not None else None
         TitleScreen(self.page, menu, tags, subtitle="A cooperative adventure in space", card=self.card(), pads=pads,
-                    footer=f"Arrows, Enter: choose  ·  F11: full screen  ·  v{VERSION}", still=lambda: self.process is not None,
+                    footer=self.keys_line(), still=lambda: self.process is not None,
                     animate=bool(self.profiles.data.get("animate", True))).pack(fill="both", expand=True)
 
     def locate(self):
@@ -585,7 +615,7 @@ class Launcher:
         self.guard()
         if not self.game:
             raise LauncherError("Locate an installation.")
-        if confirm and not messagebox.askokcancel("Prepare shaders", SHADER_PREP_TEXT + "\n\nContinue?", parent=self.root):
+        if confirm and not dialogs.confirm(self.root, "Prepare shaders", SHADER_PREP_TEXT, yes="Prepare"):
             return
         game, profiles = self.game, self.profiles
         self.background("Preparing shaders…", 
@@ -661,7 +691,7 @@ class Launcher:
                     self.show("Files" if self.active_page == "Files" else "Home")
                 else:
                     self.refresh()   # (Home's entries are enabled again)
-                    messagebox.showerror("Liftoff", str(value), parent=self.root)
+                    dialogs.error(self.root, "That did not work", str(value))
             else:
                 self.page_state.set("")
                 if self.closing:   # it ended before it could be stopped: what it made is kept
@@ -707,11 +737,10 @@ class Launcher:
         if not self.game:
             raise LauncherError("Locate an installation.")
         if (not shader_preparation(self.game, self.profiles) and not self.profiles.data.get("shader_prep_declined")):
-            answer = messagebox.askyesnocancel("Prepare shaders", SHADER_PREP_TEXT + "\n\nPrepare them before playing? "
-                                               "(No: play now and translate them during the session.)", parent=self.root)
-            if answer is None:
+            answer = dialogs.choose(self.root, "Prepare the shaders first?", SHADER_PREP_TEXT, ("Prepare, then play", "Play now", "Cancel"))
+            if answer in (None, 2):
                 return
-            if answer:
+            if answer == 0:
                 self.prepare_shaders(confirm=False, then=self.play)
                 return
             self.profiles.update(shader_prep_declined=True)
@@ -719,14 +748,15 @@ class Launcher:
 
     def started(self, result):
         self.process, self.run = result
+        self.pads.close()   # the controllers are the game's now
         self.page_state.set("Orbitals is running.")
         self.refresh()
-        self.root.after(500, self.poll_game)
+        self.game_timer = self.root.after(500, self.poll_game)
 
     def poll_game(self):
         code = self.process.poll()
         if code is None:
-            self.root.after(500, self.poll_game)
+            self.game_timer = self.root.after(500, self.poll_game)
             return
         run = self.run
         self.process = self.run = None
@@ -741,8 +771,8 @@ class Launcher:
         """Stop the long job that runs; what it made so far is kept, and starting it again continues."""
         if not (self.job and self.stoppable) or self.task.stopped:
             return
-        if messagebox.askyesno("Stop", f"Stop {spoken(self.demo_title, False)}? What is done is kept: starting it again continues from there.",
-                               parent=self.root) and self.job:
+        if dialogs.confirm(self.root, f"Stop {spoken(self.demo_title, False)}?", "What is done is kept: starting it again continues from there.",
+                           yes="Stop", no="Go on") and self.job:
             self.task.stop()
             self.page_state.set("Stopping…")
             self.refresh()
@@ -781,7 +811,8 @@ class Launcher:
 
     def close(self):
         if self.job and self.stoppable and not self.process:
-            if messagebox.askyesno("Close", f"Stop {spoken(self.demo_title, False)} and close? What is done is kept.", parent=self.root) and self.job:
+            if dialogs.confirm(self.root, f"Stop {spoken(self.demo_title, False)} and close?", "What is done is kept.", yes="Stop and close",
+                               no="Go on") and self.job:
                 self.closing = True
                 self.task.stop()
                 self.page_state.set("Stopping, then closing…")
@@ -789,8 +820,7 @@ class Launcher:
                 self.close()
             return
         if self.job or self.process:
-            messagebox.showinfo("Liftoff", "Close the game first or wait for the operation to finish.",
-                                parent=self.root)
+            dialogs.message(self.root, "Not yet", "Close the game first, or wait for the operation to finish.")
             return
         self.action(self.flush)
         self.root.destroy()
