@@ -5,6 +5,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox
 
+from . import fonts
 from .core import LauncherError, data_home, instance_lock, setup_logging
 from .look import sharp_windows
 from .ui import Launcher
@@ -16,6 +17,7 @@ def main():
     parser.add_argument("--game-dir", type=Path, help="select an Orbitals installation")
     args = parser.parse_args()
     sharp_windows()
+    fonts.load()
     root = tk.Tk()
     root.withdraw()
     try:

@@ -10,13 +10,13 @@ import webbrowser
 from pathlib import Path
 from tkinter import filedialog, ttk
 
-from . import VERSION, dialogs
+from . import VERSION, dialogs, paint
 from .core import (DEFAULT_SETTINGS, LOG, REPO, WINDOWS, LauncherError, Profiles, carry_saves, check_update, detect_installation,
                    download_update, finish_session, game_source, install_fraction, install_from_files, installation, json_bytes,
                    latest_run, launch, launch_kit, outdated_release, prepare_shaders, runtime_info, setup_log, shader_preparation,
                    source_lacks, validate_settings)
 from .demo import DemoScreen
-from .look import BG, CYAN, MUTED, PEACH, RED, ScrollPage, label, px, scale_to, theme
+from .look import BG, CYAN, MUTED, PEACH, ScrollPage, label, px, scale_to, theme
 from .navigation import Navigation, wanted
 from .neo import Card, HeaderStrip, TitleScreen
 from .pads import Pads
@@ -72,10 +72,14 @@ class Launcher:
         self.pending = {}            # settings changed and not written yet (keep, flush)
         self.flush_timer = self.game_timer = None
         scale_to(root)
+        paint.use(root)
         self.font, self.heading_font = theme(root)
         assets = Path(__file__).with_name("assets")
         self.icon = tk.PhotoImage(file=str(assets / "orbitals-icon.png"))
-        root.iconphoto(True, self.icon)
+        if WINDOWS:
+            root.iconbitmap(default=str(assets / "orbitals.ico"))
+        else:
+            root.iconphoto(True, self.icon)
         root.title("Liftoff · Orbitals PC Recomp")
         root.configure(bg=BG)
         root.minsize(px(880), px(650))
@@ -537,7 +541,7 @@ class Launcher:
         settings, tools = ("SETTINGS", "Graphics, controls, general", go("Graphics"), True), ("TOOLS", "Steam, updates, reports, logs", go("Tools"), True)
         if self.game:
             menu = [("PLAY", "The game is running" if self.process else "Start the game · two players: plug in a second controller",
-                     lambda: self.action(self.play), not busy), settings, ("PROFILES", "Saves and settings per player", go("Profiles"), True),
+                     lambda: self.action(self.play), not busy), settings, ("SAVES", "Back up, import, export", go("Profiles"), True),
                     ("GAME FILES", "What is installed, shaders", files, True), tools]
         else:
             menu = [("SET UP ORBITALS", "From your own copy: about 20 to 60 minutes, once", files, True), settings, tools]
@@ -550,7 +554,7 @@ class Launcher:
             game_tag = ("GAME", "PROBLEM" if self.notice else "NOT INSTALLED", PEACH, files)
         shader_tag = ("SHADERS", f"{shaders.get('validated', 0):,} READY".replace(",", " ") if shaders else "NOT PREPARED",
                       CYAN if shaders else PEACH, files)
-        tags = [game_tag, *((shader_tag,) if self.game else ()), ("PROFILE", self.profiles.profile["name"], RED, lambda: self.show("Profiles"))]
+        tags = [game_tag, *((shader_tag,) if self.game else ())]
         pads = (*self.pads_line(), lambda: self.show("Controls")) if self.pad_names is not None else None
         TitleScreen(self.page, menu, tags, subtitle="A cooperative adventure in space", card=self.card(), pads=pads,
                     footer=self.keys_line(), still=lambda: self.process is not None,

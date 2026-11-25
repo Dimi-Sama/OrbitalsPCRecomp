@@ -101,7 +101,7 @@ class LauncherWindowTest(LauncherWindow):
         app = self.window()
         app.pad_names = ["Pad"]
         app.show("Home")
-        for pick, page in ((lambda s: s.chips[0], "Files"), (lambda s: s.chips[2], "Profiles"), (lambda s: s.pads_spot, "Controls")):
+        for pick, page in ((lambda s: s.chips[0], "Files"), (lambda s: next(e for e in s.entries if e.label == "SAVES"), "Profiles"), (lambda s: s.pads_spot, "Controls")):
             app.show("Home"); self.spin(0.1)
             screen = self.title(app)
             with patch.object(page_settings, "gamepad_inventory", return_value=("XInput", [])):
