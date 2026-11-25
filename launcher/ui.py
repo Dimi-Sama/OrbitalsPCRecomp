@@ -29,7 +29,7 @@ MUTED = "#a3a8d6"
 CYAN = "#46e6ff"
 RED = "#ff4f8b"
 PEACH = "#ffc94a"
-HERO = "#0b0d26"
+DISABLED = "#7a80b8"   # a label of a control that cannot be used now
 
 
 def theme(root):
@@ -45,25 +45,21 @@ def theme(root):
     style.configure(".", background=BG, foreground=INK, bordercolor=LINE, font=(body, 10))
     style.configure("TButton", background=PANEL, foreground=INK, borderwidth=1,
                     lightcolor=PANEL, darkcolor=PANEL, focuscolor=CYAN, padding=(13, 8))
-    style.map("TButton", background=[("disabled", "#162228"), ("active", "#1b3842")],
-              foreground=[("disabled", "#798d94")], bordercolor=[("focus", CYAN), ("active", "#497581")])
+    style.map("TButton", background=[("disabled", RAIL), ("pressed", LINE), ("active", "#222a66")],
+              foreground=[("disabled", DISABLED)], bordercolor=[("focus", CYAN), ("active", "#5a6bd0")])
     style.configure("Play.TButton", background=RED, foreground=BG, padding=(23, 12),
                     lightcolor=RED, darkcolor=RED, bordercolor=RED, font=(heading, 13, "bold"))
-    style.map("Play.TButton", background=[("disabled", "#273137"), ("active", "#ff6657")],
-              foreground=[("disabled", MUTED)], bordercolor=[("focus", INK)])
-    style.configure("Rail.TButton", background=RAIL, foreground=MUTED, padding=(13, 11),
-                    lightcolor=RAIL, darkcolor=RAIL, bordercolor=RAIL, anchor="w")
-    style.configure("Current.TButton", background="#1a343d", foreground=CYAN, padding=(13, 11),
-                    lightcolor="#1a343d", darkcolor="#1a343d", bordercolor="#315461", anchor="w",
-                    font=(body, 10, "bold"))
+    style.map("Play.TButton", background=[("disabled", PANEL), ("pressed", "#e03a74"), ("active", "#ff77a5")],
+              foreground=[("disabled", DISABLED)], bordercolor=[("focus", INK)])
     style.configure("TEntry", fieldbackground=ENTRY, insertcolor=INK, padding=(8, 5))
     style.configure("TCombobox", fieldbackground=ENTRY, arrowcolor=CYAN, padding=(7, 5))
     style.configure("TSpinbox", fieldbackground=ENTRY, arrowcolor=CYAN, insertcolor=INK, padding=(7, 5))
     style.map("TCombobox", fieldbackground=[("readonly", ENTRY)], selectbackground=[("readonly", ENTRY)],
               selectforeground=[("readonly", INK)], foreground=[("readonly", INK)])
-    style.configure("TCheckbutton", background=BG, foreground=INK, indicatorbackground=ENTRY)
-    style.map("TCheckbutton", indicatorbackground=[("selected", CYAN)],
-              background=[("active", PANEL)], foreground=[("disabled", MUTED)])
+    for name, ground in (("TCheckbutton", BG), ("Panel.TCheckbutton", PANEL)):   # on the page, on a card
+        style.configure(name, background=ground, foreground=INK, indicatorbackground=ENTRY)
+        style.map(name, indicatorbackground=[("selected", CYAN)],
+                  background=[("active", ground)], foreground=[("disabled", DISABLED)])
     style.configure("TProgressbar", background=CYAN, troughcolor=ENTRY)
     style.configure("TScrollbar", background=PANEL, troughcolor=BG, arrowcolor=MUTED)
     root.option_add("*TCombobox*Listbox.background", ENTRY)
@@ -88,6 +84,54 @@ def text_box(parent, height=4):
                    selectbackground=LINE, highlightthickness=1, highlightbackground=LINE,
                    highlightcolor=CYAN, relief="flat", padx=9, pady=7, wrap="word",
                    font="TkTextFont", undo=True)
+
+
+class ScrollPage(tk.Frame):
+    """A page that scrolls when the window is shorter than it: `body` takes the widgets. The bar shows only when needed, the
+    wheel scrolls from anywhere over the page, and a widget that takes the focus is brought into view."""
+
+    def __init__(self, parent):
+        super().__init__(parent, bg=BG)
+        self.view = tk.Canvas(self, bg=BG, highlightthickness=0, bd=0)
+        self.bar = ttk.Scrollbar(self, command=self.view.yview)
+        self.view.configure(yscrollcommand=self.bar.set, yscrollincrement=20)
+        self.view.pack(side="left", fill="both", expand=True)
+        self.body = tk.Frame(self.view, bg=BG)
+        self.item = self.view.create_window(0, 0, window=self.body, anchor="nw")
+        self.body.bind("<Configure>", self._fit)
+        self.view.bind("<Configure>", self._fit)
+
+    def overflows(self):
+        return self.body.winfo_reqheight() > self.view.winfo_height()
+
+    def _fit(self, _event=None):
+        self.view.itemconfigure(self.item, width=self.view.winfo_width())
+        self.view.configure(scrollregion=(0, 0, self.view.winfo_width(), self.body.winfo_reqheight()))
+        if self.overflows():
+            self.bar.pack(side="right", fill="y", padx=(8, 0))
+        else:
+            self.bar.pack_forget()
+            self.view.yview_moveto(0)
+
+    def wheel(self, event):
+        if isinstance(event.widget, str) or not str(event.widget).startswith(str(self)) or not self.overflows():
+            return   # (a widget of Tk's own, such as a list that drops down, has no object)
+        if event.widget.winfo_class() in ("Listbox", "Text", "TCombobox", "TSpinbox"):
+            return   # the widget's own wheel
+        up = event.num == 4 or getattr(event, "delta", 0) > 0
+        self.view.yview_scroll(-3 if up else 3, "units")
+
+    def reveal(self, event):
+        if isinstance(event.widget, str) or not str(event.widget).startswith(str(self.body) + "."):
+            return
+        top = event.widget.winfo_rooty() - self.body.winfo_rooty()
+        bottom = top + event.widget.winfo_height()
+        shown, height = self.view.canvasy(0), self.view.winfo_height()
+        total = max(1, self.body.winfo_reqheight())
+        if top < shown:
+            self.view.yview_moveto(max(0, top - 12) / total)
+        elif bottom > shown + height:
+            self.view.yview_moveto((bottom + 12 - height) / total)
 
 
 def native_size(root):
@@ -135,9 +179,9 @@ class Launcher:
         self.demo = None; self.demo_title = None; self.demo_state = (0.0, "", "")   # the demo screen of a long task (demo.py)
         self.page_state = tk.StringVar()
         self.events = queue.Queue()
+        self.calls = queue.Queue()   # functions other threads want run on this one (post)
         self.font, self.heading_font = theme(root)
         assets = Path(__file__).with_name("assets")
-        self.art = tk.PhotoImage(file=str(assets / "orbital-halo.png"))
         self.icon = tk.PhotoImage(file=str(assets / "orbitals-icon.png"))
         root.iconphoto(True, self.icon)
         root.title("Liftoff · Orbitals PC Recomp")
@@ -147,6 +191,7 @@ class Launcher:
         height = min(755, root.winfo_screenheight() - 75)
         root.geometry(f"{width}x{height}")
         root.protocol("WM_DELETE_WINDOW", self.close)
+        root.bind("<Destroy>", self.closed, add="+")
         root.report_callback_exception = self.callback_error
 
         configured = self.profiles.data.get("install")
@@ -162,9 +207,40 @@ class Launcher:
         LOG.info("event=detect ready=%s", self.game is not None)
         self.build_shell()
         self.show("Home")
+        self.pump()
         if self.profiles.data.get("update_check", True):   # on unless turned off in Settings; one request to GitHub's releases API
             threading.Thread(target=lambda: self.update_result(quiet=True), daemon=True).start()
-        self.root.after(600, self.offer_recompile)
+        self.offer_timer = self.root.after(600, self.offer_recompile)
+
+    def closed(self, event):
+        if event.widget is self.root:
+            for timer in (self.pump_timer, self.offer_timer):
+                self.root.after_cancel(timer)
+
+    def post(self, function):
+        """From any thread: run function on the Tk thread (Tk calls from another thread can fail while a window closes)."""
+        self.calls.put(function)
+
+    def pump(self):
+        while True:
+            try:
+                function = self.calls.get_nowait()
+            except queue.Empty:
+                break
+            self.action(function)
+        self.pump_timer = self.root.after(90, self.pump)
+
+    def probe(self, worker, done):
+        """A short question asked on a worker thread, whose answer goes to done. Unlike background(), nothing waits for it."""
+        def work():
+            try:
+                result = worker()
+            except Exception as error:   # a failed probe is an answer too: never a dialog of its own
+                LOG.error("event=probe_failed type=%s", type(error).__name__)
+                result = error
+            self.post(lambda: done(result))
+
+        threading.Thread(target=work, daemon=True).start()
 
     def offer_recompile(self, asked_now=False):
         """A game compiled by an older release: say it once per (game release, launcher version), and from Play."""
@@ -215,7 +291,7 @@ class Launcher:
             info, error = check_update(), None
         except LauncherError as err:
             info, error = None, str(err)
-        self.root.after(0, lambda: self.show_update(info, error, quiet))
+        self.post(lambda: self.show_update(info, error, quiet))
 
     def show_update(self, info, error, quiet):
         if error:
@@ -304,13 +380,18 @@ class Launcher:
         self.stage = tk.Frame(self.content, bg=BG)
         self.stage.pack(fill="both", expand=True)
         self.page = tk.Frame(self.stage, bg=BG)
+        self.scroll = None   # the ScrollPage shown, if any
+        for event in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.root.bind_all(event, lambda e: self.scroll and self.scroll.wheel(e))
+        self.root.bind_all("<FocusIn>", lambda e: self.scroll and self.scroll.reveal(e), add="+")
         self.root.bind("<Escape>", lambda _e: self.show("Home") if self.active_page != "Home" else None)
 
     SUBSCREENS = {"Graphics": ("SETTINGS", "Graphics"), "Controls": ("SETTINGS", "Controls"), "Settings": ("SETTINGS", "Launcher"),
-                  "Profiles": ("PROFILES", None), "Support": ("HELP", None), "Netplay": ("NETPLAY", None)}
+                  "Profiles": ("PROFILES", None), "Support": ("HELP", None)}
 
     def show(self, name):
         self.active_page = name
+        self.scroll = None
         for child in self.stage.winfo_children():
             child.destroy()
         self.demo = None
@@ -318,8 +399,9 @@ class Launcher:
             title, tab = self.SUBSCREENS.get(name, (name.upper(), None))
             tabs = [("Graphics", "GRAPHICS"), ("Controls", "CONTROLS"), ("Settings", "LAUNCHER")] if tab else []
             header_strip(self.stage, title, tabs, name, on_tab=self.show, on_back=lambda: self.show("Home")).pack(fill="x")
-            self.page = tk.Frame(self.stage, bg=BG)
-            self.page.pack(fill="both", expand=True, padx=34, pady=(14, 0))
+            self.scroll = ScrollPage(self.stage)
+            self.scroll.pack(fill="both", expand=True, padx=(34, 20), pady=(14, 0))
+            self.page = self.scroll.body
         else:
             self.page = tk.Frame(self.stage, bg=BG)
             self.page.pack(fill="both", expand=True)
@@ -330,10 +412,19 @@ class Launcher:
             label(self.page, "You can keep using the other pages; this screen comes back on Home.", color=MUTED, size=9).pack(anchor="w", pady=(8, 0))
             return
         getattr(self, {"Home": "home", "Profiles": "profile_page", "Graphics": "graphics_page", "Controls": "controls_page", "Settings": "settings_page",
-                       "Support": "support_page", "Netplay": "netplay_page"}[name])()
+                       "Support": "support_page"}[name])()
 
     def refresh(self):
+        """The page again, as the state is now; on a page of rows, where the player was."""
+        rows = getattr(self.view, "rows", None)
+        if not rows:
+            self.show(self.active_page)
+            return
+        chosen, place = rows.selected and rows.selected.caption, self.scroll.view.yview()[0]
         self.show(self.active_page)
+        self.root.update_idletasks()
+        self.view.rows.choose(chosen)
+        self.scroll.view.yview_moveto(place)
 
     def heading(self, title, subtitle):
         label(self.page, title, size=23, bold=True, font_family=self.heading_font).pack(anchor="w")
@@ -368,8 +459,8 @@ class Launcher:
         shader_tag = ("SHADERS", f"{shaders.get('validated', 0):,} READY".replace(",", " ") if shaders else "NOT PREPARED",
                       CYAN if shaders else PEACH)
         tags = [game_tag, shader_tag, ("PROFILE", self.profiles.profile["name"], RED)]
-        subtitle = self.error_text[:140] if self.error_text else "A cooperative adventure in space"
-        TitleScreen(self.page, menu, tags, subtitle=subtitle).pack(fill="both", expand=True)
+        subtitle = self.error_text[:400] if self.error_text else "A cooperative adventure in space"
+        TitleScreen(self.page, menu, tags, subtitle=subtitle, still=lambda: self.process is not None).pack(fill="both", expand=True)
 
     def locate(self):
         self.guard()
@@ -474,7 +565,7 @@ class Launcher:
                 self.events.put(("error", error))
 
         threading.Thread(target=work, daemon=True).start()
-        if demo:
+        if demo or self.active_page == "Home":   # (its entries are disabled while the job runs)
             self.show("Home")
         self.root.after(90, self.poll_job)
 
@@ -490,10 +581,9 @@ class Launcher:
                 continue
             complete, self.job = self.job, None
             self.progress.pack_forget()
-            if self.demo_title:
-                self.demo_title = None
-                if self.active_page == "Home":
-                    self.show("Home")
+            self.demo_title = None
+            if self.active_page == "Home":   # also after a job without a demo: its entries are enabled again
+                self.show("Home")
             if kind == "error":
                 self.error_text = str(value)
                 self.page_state.set("The operation failed.")
@@ -703,7 +793,10 @@ class Launcher:
                     return None, str(err)
 
             def show_devices(result):
-                backend, devices = result
+                if not card.winfo_exists():   # another page is shown
+                    return
+                scan_button.state(["!disabled"])
+                backend, devices = (None, "Could not check the connected controllers.") if isinstance(result, Exception) else result
                 if backend is None:
                     detected.set(devices)
                 elif backend == "unavailable":
@@ -716,18 +809,19 @@ class Launcher:
                 else:
                     detected.set(f"No controllers detected · {backend}")
 
-            self.background("Scanning for controllers…", probe, show_devices)
+            scan_button.state(["disabled"])
             detected.set("Scanning…")
+            self.probe(probe, show_devices)
 
         if self.process:
             scan_button.state(["disabled"])
-        elif not self.job:
+        else:
             scan()
 
         settings = self.profiles.settings
-        card = surface(self.page)
-        card.pack(fill="x", pady=(0, 12))
-        panel = tk.Frame(card, bg=PANEL)
+        card2 = surface(self.page)
+        card2.pack(fill="x", pady=(0, 12))
+        panel = tk.Frame(card2, bg=PANEL)
         panel.pack(fill="x", padx=13, pady=11)
         panel.columnconfigure((0, 1, 2), weight=1)
         players = {"Player 1": 1, "Player 2": 2}
@@ -751,7 +845,7 @@ class Launcher:
         label(panel, "F2 toggles mouse capture in game. Left click is ZR and right click is ZL.",
               bg=PANEL, color=MUTED, wraplength=520).grid(row=4, column=0, columnspan=3, sticky="w")
         if WINDOWS:
-            ttk.Checkbutton(panel, text="Controller vibration", variable=vibration).grid(
+            ttk.Checkbutton(panel, text="Controller vibration", variable=vibration, style="Panel.TCheckbutton").grid(
                 row=5, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
         def save():
@@ -827,7 +921,7 @@ class Launcher:
                 ("Display", ttk.Combobox(panel2, textvariable=display, values=("Windowed", "Borderless"), state="readonly", width=14)),
                 ("Window output size", size_control),
                 ("Upscaling filter", ttk.Combobox(panel2, textvariable=upscale, values=("Standard", "Sharp", "FSR1"), state="readonly", width=14)),
-                ("VSync", ttk.Checkbutton(panel2, variable=vsync, text="On")))
+                ("VSync", ttk.Checkbutton(panel2, variable=vsync, text="On", style="Panel.TCheckbutton")))
         for n, (caption, control) in enumerate(rows):
             col, row = n % 3, (n // 3) * 2 + 1
             label(panel2, caption, bg=PANEL, size=9, color=MUTED).grid(row=row, column=col, sticky="w", pady=(7, 1))
@@ -913,16 +1007,6 @@ class Launcher:
                 ("Reports folder", self.open_reports),
                 ("Issues GitHub", self.issues), ("System information", self.inspect_system)):
             self.button(self.page, title, callback).pack(anchor="w", pady=(0, 5))
-
-    def netplay_page(self):
-        self.heading("Netplay", "Online multiplayer")
-        panel = surface(self.page)
-        panel.pack(fill="x")
-        label(panel, "●  Unavailable", color=PEACH, bg=PANEL, bold=True, size=16).pack(
-            anchor="w", padx=15, pady=(13, 4))
-        label(panel, "Local co-op uses the runtime's input. Online sessions and GameShare "
-              "are not available in v0.1.", bg=PANEL, color=MUTED, wraplength=550).pack(
-                  anchor="w", padx=15, pady=(0, 14))
 
     def open_reports(self):
         directory = self.local / "reports"
@@ -1028,7 +1112,7 @@ class ReportForm:
             side="left", padx=(0, 8))
         self.title = tk.StringVar()
         ttk.Entry(title_row, textvariable=self.title).pack(side="left", fill="x", expand=True)
-        label(body, "Problem type and title", color=MUTED, size=8).pack(anchor="w", pady=(2, 5))
+        label(body, "Problem type and title", color=MUTED, size=9).pack(anchor="w", pady=(2, 5))
         form = tk.Frame(body, bg=BG)
         form.pack(fill="both", expand=True)
         form.columnconfigure((0, 1), weight=1, uniform="fields")

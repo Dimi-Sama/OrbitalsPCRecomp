@@ -121,7 +121,7 @@ python -B -m unittest discover -s launcher/tests -v
 
 The launcher runs from source with the standard library and Tk. The tests cover detection, preparation, profile isolation, restores,
 launch errors, graphics settings (including values saved by the earlier French interface), the update check, the installer step
-parsing and the reports. The launcher was checked with the Windows runtime. The Linux x86-64 package can be tested using the
+parsing and the reports, and every page of the window at its minimum size. The launcher was checked with the Windows runtime. The Linux x86-64 package can be tested using the
 [the README](../README.md#getting-started).
 
 The audit also looked at the installation and save handling of [Hookshot-rs](https://github.com/dazemc/Hookshot-rs) and

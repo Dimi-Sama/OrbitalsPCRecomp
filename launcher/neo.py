@@ -2,7 +2,9 @@
 """The launcher's title screen, drawn by hand on one Tk canvas (no stock widget look): a 90s anime title-screen style of our own, with
 diagonal duotone panels, big display type, a starfield and sparkles, and a menu that the mouse, the keyboard (arrows, Enter) and later a
 controller drive. Draws only; what the entries do comes from the caller (ui.py), which keeps the launcher's logic."""
+import ctypes
 import math
+import os
 import random
 import tkinter as tk
 from tkinter import font
@@ -16,30 +18,72 @@ PINK_D = "#8f1f4d"
 CYAN = "#46e6ff"
 GOLD = "#ffc94a"
 MUTED = "#8f8fb8"
+DIM = "#d6bccd"     # an entry that cannot be chosen now, on the pink panel
 LINE_C = "#2d3b94"
-FRAME_MS = 40
+FRAME_MS = 80       # one cell of stars per frame: Tk repaints that cell, not the whole window
+CELLS = (8, 6)
+STILL_MS = 500      # how often a still screen looks whether it may move again
 
 
 def pick(families, *wanted):
     return next((f for f in wanted if f in families), wanted[-1])
 
 
-class TitleScreen(tk.Canvas):
-    """menu: [(label, hint, callback, enabled)]; tags: [(title, value, colour)] shown as the 'PLAYER 1'-style chips."""
+def motion_allowed():
+    """Whether the system's animations are on (Windows: Accessibility > Visual effects); on where it cannot be told."""
+    if os.name == "nt":
+        try:
+            on = ctypes.c_int(1)
+            if ctypes.windll.user32.SystemParametersInfoW(0x1042, 0, ctypes.byref(on), 0):   # SPI_GETCLIENTAREAANIMATION
+                return bool(on.value)
+        except (OSError, AttributeError):
+            pass
+    return True
 
-    def __init__(self, parent, menu, tags, subtitle="", **options):
+
+def fitting(family, size, least, texts, width):
+    """The largest bold font of a family, from size down to least, that shows every text in width pixels."""
+    for points in range(size, least, -1):
+        f = font.Font(family=family, size=points, weight="bold")
+        if all(f.measure(text) <= width for text in texts):
+            return f
+    return font.Font(family=family, size=least, weight="bold")
+
+
+def shortened(text, f, width):
+    """text, or its beginning with an ellipsis when it is wider than width pixels."""
+    if f.measure(text) <= width:
+        return text
+    while text and f.measure(text + "…") > width:
+        text = text[:-1]
+    return text.rstrip() + "…"
+
+
+def hand(canvas, on):
+    """The pointer over something to click. Only when it changes: a canvas repaints itself whole for any configure, at each mouse move."""
+    cursor = "hand2" if on else ""
+    if str(canvas.cget("cursor")) != cursor:
+        canvas.configure(cursor=cursor)
+
+
+class TitleScreen(tk.Canvas):
+    """menu: [(label, hint, callback, enabled)]; tags: [(title, value, colour)] shown as the 'PLAYER 1'-style chips.
+    still(): True while the stars should not move (a game is running); they also stop while nobody can see them."""
+
+    def __init__(self, parent, menu, tags, subtitle="", still=lambda: False, **options):
         super().__init__(parent, bg=NIGHT, highlightthickness=0, **options)
         fam = set(font.families())
-        disp = pick(fam, "Bahnschrift", "DejaVu Sans Condensed", "Liberation Sans Narrow", "Arial Narrow", "TkDefaultFont")
+        self.disp = pick(fam, "Bahnschrift", "DejaVu Sans Condensed", "Liberation Sans Narrow", "Arial Narrow", "TkDefaultFont")
         body = pick(fam, "Segoe UI", "Noto Sans", "DejaVu Sans", "TkDefaultFont")
-        self.f_logo = (disp, 64, "bold"); self.f_kana = (pick(fam, "Yu Gothic UI", "Meiryo", "Noto Sans CJK JP", "MS Gothic", body), 20, "bold")
-        self.f_menu = (disp, 26, "bold"); self.f_hint = (body, 10); self.f_tag = (disp, 11, "bold"); self.f_val = (disp, 16, "bold")
-        self.f_small = (body, 9)
-        self.menu, self.tags, self.subtitle = menu, tags, subtitle
+        self.f_kana = (pick(fam, "Yu Gothic UI", "Meiryo", "Noto Sans CJK JP", "MS Gothic", body), 20, "bold")
+        self.f_hint = font.Font(family=body, size=10); self.f_small = font.Font(family=body, size=9)
+        self.f_tag = font.Font(family=self.disp, size=11, weight="bold")
+        self.menu, self.tags, self.subtitle, self.still = menu, tags, subtitle, still
         self.sel = next((i for i, m in enumerate(menu) if m[3]), 0)
-        self.t = 0; self.running = False; self.stars = []
+        self.t = 0; self.running = False; self.cells = []; self.boxes = []
+        self.moves = motion_allowed()
         self.bind("<Configure>", lambda e: self._draw())
-        self.bind("<Map>", lambda e: self._start()); self.bind("<Destroy>", lambda e: setattr(self, "running", False))
+        self.bind("<Map>", lambda e: self._start()); self.bind("<Destroy>", lambda e: self._stop())
         self.bind("<Up>", lambda e: self._move(-1)); self.bind("<Down>", lambda e: self._move(1))
         self.bind("<Return>", lambda e: self._activate(self.sel)); self.bind("<space>", lambda e: self._activate(self.sel))
         self.bind("<Motion>", self._hover); self.bind("<Button-1>", self._click)
@@ -57,7 +101,7 @@ class TitleScreen(tk.Canvas):
             self.menu[i][2]()
 
     def _item_at(self, x, y):
-        for i, box in enumerate(getattr(self, "boxes", [])):
+        for i, box in enumerate(self.boxes):
             if box[0] <= x <= box[2] and box[1] <= y <= box[3]: return i
         return None
 
@@ -65,7 +109,7 @@ class TitleScreen(tk.Canvas):
         i = self._item_at(e.x, e.y)
         if i is not None and i != self.sel and self.menu[i][3]:
             self.sel = i; self._draw_menu()
-        self.configure(cursor="hand2" if i is not None and self.menu[i][3] else "")
+        hand(self, i is not None and self.menu[i][3])
 
     def _click(self, e):
         self.focus_set()
@@ -76,13 +120,25 @@ class TitleScreen(tk.Canvas):
     def _start(self):
         self.focus_set()
         if not self.running:
-            self.running = True; self.after(FRAME_MS, self._tick)
+            self.running = True; self.timer = self.after(FRAME_MS, self._tick)
+
+    def _stop(self):
+        if self.running:
+            self.running = False; self.after_cancel(self.timer)
+
+    def _split(self, y):
+        """where the diagonal between the two panels is at height y"""
+        return self.w * (0.56 - 0.12 * y / self.h)
+
+    def _room(self, x, y):
+        """the width left for a text from x at height y, before the diagonal"""
+        return self._split(y) - 26 - 12 - x
 
     def _draw(self):
         self.delete("all")
         w, h = max(self.winfo_width(), 400), max(self.winfo_height(), 300); self.w, self.h = w, h
         # diagonal duotone panels (left blue, right pink), the split leaning like a title card
-        split_top, split_bot = w * 0.56, w * 0.44
+        split_top, split_bot = self._split(0), self._split(h)
         self.create_polygon(0, 0, split_top, 0, split_bot, h, 0, h, fill=BLUE_D, outline="")
         self.create_polygon(0, 0, split_top - 26, 0, split_bot - 26, h, 0, h, fill=BLUE, outline="")
         # glow rays behind the logo (drawn before the pink panel, which covers their other half)
@@ -93,62 +149,112 @@ class TitleScreen(tk.Canvas):
         self.create_polygon(split_top + 14, 0, w, 0, w, h, split_bot + 14, h, fill=PINK_D, outline="")
         self.create_line(split_top, 0, split_bot, h, fill=INK, width=4)
         self.create_line(split_top + 14, 0, split_bot + 14, h, fill=GOLD, width=2)
-        rnd = random.Random(3)   # stars and sparkles over the panels
-        self.stars = []
-        for _ in range(120):
-            x, y, s = rnd.uniform(0, w), rnd.uniform(0, h), rnd.choice((1, 1, 1, 2, 2, 3))
-            self.stars.append((self.create_oval(x, y, x + s, y + s, fill="#ffffff", outline=""), rnd.uniform(0, 6.28)))
-        for _ in range(7):   # four-point sparkles
-            x, y, r = rnd.uniform(w * 0.05, w * 0.95), rnd.uniform(h * 0.05, h * 0.95), rnd.uniform(5, 11)
-            self.create_polygon(x, y - r, x + r * 0.22, y - r * 0.22, x + r, y, x + r * 0.22, y + r * 0.22, x, y + r, x - r * 0.22, y + r * 0.22,
-                                x - r, y, x - r * 0.22, y - r * 0.22, fill="#fff6d8", outline="")
+        self._place_menu()
+        self._draw_sky(w, h)
+        for y in range(0, h, 4):   # faint scanlines, over the panels and under the texts
+            self.create_line(0, y, w, y, fill="#05061a", stipple="gray12")
         # logo block
+        logo = fitting(self.disp, 64, 32, ("ORBITALS",), self._room(40, h * 0.38))
         self.create_text(42, h * 0.20, text="オービタルズ", font=self.f_kana, fill=CYAN, anchor="w")
-        self.create_text(36 + 4, h * 0.32 + 5, text="ORBITALS", font=self.f_logo, fill="#0b1240", anchor="w")
-        self.create_text(36, h * 0.32, text="ORBITALS", font=self.f_logo, fill=INK, anchor="w")
+        self.create_text(36 + 4, h * 0.32 + 5, text="ORBITALS", font=logo, fill="#0b1240", anchor="w")
+        self.create_text(36, h * 0.32, text="ORBITALS", font=logo, fill=INK, anchor="w")
         self.create_rectangle(40, h * 0.42, 40 + 170, h * 0.42 + 26, fill=PINK, outline="")
-        self.create_text(50, h * 0.42 + 13, text="LIFTOFF · PC RECOMP", font=self.f_tag, fill=INK, anchor="w")
+        self.create_text(50, h * 0.42 + 13, text="LIFTOFF · PC RECOMP", font=self.f_tag, fill=NIGHT, anchor="w")
         self.create_text(222, h * 0.42 + 13, text="▶", font=self.f_tag, fill=INK, anchor="w")
         if self.subtitle:
-            self.create_text(42, h * 0.42 + 48, text=self.subtitle, font=self.f_hint, fill="#c9d4ff", anchor="w")
-        # state chips, bottom left ("PLAYER 1"-style tags)
-        x = 40; y = h - 92
-        for title, value, colour in self.tags:
-            tw = max(font.Font(font=self.f_tag).measure(title), font.Font(font=self.f_val).measure(value)) + 30
+            self.create_text(42, h * 0.42 + 40, text=self.subtitle, font=self.f_hint, fill=INK, anchor="nw", width=self._room(42, h * 0.62))
+        self._draw_tags(h)
+        credit, more = "SwitchRecomp by MZ Labs", "  ·  your own copy, recompiled on your machine"
+        self.create_text(42, h - 22, text=credit + more if self.f_small.measure(credit + more) <= self._room(42, h) else credit,
+                         font=self.f_small, fill=INK, anchor="w")
+        self._draw_menu()
+
+    def _draw_sky(self, w, h):
+        """Stars and sparkles, where there is no text; the stars are kept per cell of the screen, for _tick."""
+        rnd = random.Random(3)
+        self.cells = [[] for _ in range(CELLS[0] * CELLS[1])]
+        top, bottom = (self.boxes[0][1], self.boxes[-1][3]) if self.boxes else (0, 0)
+
+        def over_text(x, y, margin):   # the menu; the logo and the chips
+            if x > self._split(y):
+                return x > self.x0 - 10 - margin and top - margin < y < bottom + margin
+            return 0.16 * h - margin < y < 0.54 * h or y > h - 100 - margin
+
+        for _ in range(120):
+            x, y, s = rnd.uniform(0, w), rnd.uniform(0, h), rnd.choice((1, 1, 1, 2, 2, 3))
+            if over_text(x, y, 0):
+                continue
+            item = self.create_oval(x, y, x + s, y + s, fill="#ffffff", outline="")
+            column, row = min(int(x / w * CELLS[0]), CELLS[0] - 1), min(int(y / h * CELLS[1]), CELLS[1] - 1)
+            self.cells[row * CELLS[0] + column].append((item, rnd.uniform(0, 6.28)))
+        for _ in range(7):   # four-point sparkles
+            x, y, r = rnd.uniform(w * 0.05, w * 0.95), rnd.uniform(h * 0.05, h * 0.95), rnd.uniform(5, 11)
+            if over_text(x, y, 12):
+                continue
+            self.create_polygon(x, y - r, x + r * 0.22, y - r * 0.22, x + r, y, x + r * 0.22, y + r * 0.22, x, y + r, x - r * 0.22, y + r * 0.22,
+                                x - r, y, x - r * 0.22, y - r * 0.22, fill="#fff6d8", outline="")
+
+    def _draw_tags(self, h):
+        """State chips, bottom left ("PLAYER 1"-style tags), kept left of the diagonal: smaller, then shortened, when they do not fit."""
+        x, y = 40, h - 92
+        room = self._room(x, h - 40)
+        for size, pad, gap in ((16, 30, 14), (14, 24, 10), (12, 20, 8)):
+            value_font = font.Font(family=self.disp, size=size, weight="bold")
+            widths = [max(self.f_tag.measure(title), value_font.measure(value)) + pad for title, value, _ in self.tags]
+            if sum(widths) + gap * (len(widths) - 1) <= room:
+                break
+        else:   # the last chip (the profile, up to 32 characters) gives way
+            widths[-1] = max(self.f_tag.measure(self.tags[-1][0]) + pad, room - sum(widths[:-1]) - gap * (len(widths) - 1))
+        for (title, value, colour), tw in zip(self.tags, widths):
             self.create_rectangle(x, y, x + tw, y + 22, fill=colour, outline="")
             self.create_text(x + 10, y + 11, text=title, font=self.f_tag, fill=NIGHT, anchor="w")
-            self.create_text(x + 10, y + 40, text=value, font=self.f_val, fill=INK, anchor="w")
-            x += tw + 14
-        self.create_text(42, h - 22, text="SwitchRecomp by MZ Labs  ·  your own copy, recompiled on your machine", font=self.f_small, fill="#aab4e8", anchor="w")
-        self._draw_menu()
-        for y in range(0, h, 4):   # faint scanlines
-            self.create_line(0, y, w, y, fill="#05061a", stipple="gray12")
+            self.create_text(x + 10, y + 40, text=shortened(value, value_font, tw - 12), font=value_font, fill=INK, anchor="w")
+            x += tw + gap
+
+    def _place_menu(self):
+        """The entries' places: the largest type that fits beside the diagonal, hints wrapped, the block kept inside the window."""
+        w, h = self.w, self.h
+        self.x0 = w * 0.62
+        self.hint_width = w - 46 - 14 - self.x0
+        self.f_menu = fitting(self.disp, 26, 16, [m[0] for m in self.menu], self.hint_width)
+        line, hint = self.f_menu.metrics("linespace"), self.f_hint.metrics("linespace")
+        heights = [line + hint * (1 if self.f_hint.measure(m[1]) <= self.hint_width else 2) + 4 for m in self.menu]
+        gap = max(6, min(16, (h - 48 - sum(heights)) / max(1, len(heights))))
+        y = max(16, min(h * 0.24, (h - sum(heights) - gap * (len(heights) - 1)) / 2))
+        self.boxes = []
+        for height in heights:
+            self.boxes.append((self.x0 - 46, y - 4, w - 30, y + height + 2))
+            y += height + gap
 
     def _draw_menu(self):
         self.delete("menu")
-        w, h = self.w, self.h
-        x0 = w * 0.62; y = h * 0.24; self.boxes = []
-        for i, (lab, hint, _cb, enabled) in enumerate(self.menu):
+        line = self.f_menu.metrics("linespace")
+        for i, ((lab, hint, _cb, enabled), (left, top, right, bottom)) in enumerate(zip(self.menu, self.boxes)):
             on = i == self.sel and enabled
             if on:   # the selected entry: a slanted bar with a cursor, like a game menu
-                self.create_polygon(x0 - 30, y - 4, w - 30, y - 4, w - 46, y + 50, x0 - 46, y + 50, fill=INK, outline="", tags="menu")
-                self.create_text(x0 - 22, y + 23, text="▶", font=self.f_tag, fill=PINK, anchor="w", tags="menu")
-            colour = PINK_D if on else (INK if enabled else MUTED)
-            self.create_text(x0, y + 16, text=lab, font=self.f_menu, fill=colour, anchor="w", tags="menu")
-            self.create_text(x0 + 2, y + 39, text=hint, font=self.f_hint, fill=(BLUE_D if on else ("#ffd3e4" if enabled else MUTED)), anchor="w", tags="menu")
-            self.boxes.append((x0 - 46, y - 4, w - 30, y + 50))
-            y += 70
+                self.create_polygon(left + 16, top, right, top, right - 16, bottom, left, bottom, fill=INK, outline="", tags="menu")
+                self.create_text(self.x0 - 22, top + 4 + line / 2, text="▶", font=self.f_tag, fill=PINK_D, anchor="w", tags="menu")
+            self.create_text(self.x0, top + 3, text=lab, font=self.f_menu, fill=PINK_D if on else (INK if enabled else DIM), anchor="nw", tags="menu")
+            self.create_text(self.x0 + 2, top + 3 + line, text=hint, font=self.f_hint, width=self.hint_width,
+                             fill=BLUE_D if on else ("#ffd3e4" if enabled else DIM), anchor="nw", tags="menu")
+
+    def _moving(self):
+        """Nothing moves on a hidden or minimized window, behind another one, while a game runs, or with the system's animations off."""
+        return self.moves and self.winfo_viewable() and self.focus_displayof() is not None and not self.still()
 
     def _tick(self):
         if not self.running: return
         try:
-            self.t += 1
-            for item, ph in self.stars:   # twinkle
-                v = 0.5 + 0.5 * math.sin(self.t * 0.12 + ph)
-                c = int(110 + 145 * v); self.itemconfigure(item, fill=f"#{c:02x}{c:02x}ff")
+            moving = self._moving()
+            if moving:
+                for item, ph in self.cells[self.t % len(self.cells)] if self.cells else ():   # twinkle
+                    c = int(110 + 145 * (0.5 + 0.5 * math.sin(self.t * 0.12 + ph))); self.itemconfigure(item, fill=f"#{c:02x}{c:02x}ff")
+                self.t += 1
+        except KeyError:   # the focus is in a native dialog, which Tkinter has no widget for
+            moving = False
         except tk.TclError:
             self.running = False; return
-        self.after(FRAME_MS, self._tick)
+        self.timer = self.after(FRAME_MS if moving else STILL_MS, self._tick)
 
 
 def header_strip(parent, title, tabs, current, on_tab, on_back, height=86):
