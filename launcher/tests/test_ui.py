@@ -12,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from launcher import core, graphics, page_settings, page_tools, ui
+from launcher import core, graphics, look, page_settings, page_tools, ui
 from launcher.neo import TitleScreen
 from launcher.tasks import Stopped
 from launcher.ui import Launcher
@@ -421,6 +421,32 @@ class LauncherWindowTest(LauncherWindow):
             screen = self.title(app)
             for spot in screen.chips:
                 self.assertLess(spot.box[2], screen._split(spot.box[3]))
+
+    def test_pages_and_title_fit_at_150_percent(self):
+        with patch.object(ui, "scale_to", lambda root: look.scale_to(root, dpi=144)):
+            app = self.window("1320x975")
+        self.addCleanup(setattr, look, "SCALE", 1.0)
+        if look.SCALE < 1.5:
+            self.skipTest("the screen is too small for 150 %")
+        self.assertEqual(look.px(100), 150)
+        self.spin(0.2)
+        screen = self.title(app)
+        for spot in screen.chips + screen.buttons:
+            self.assertLess(spot.box[2], screen._split(spot.box[3]))
+        self.assertLess(screen.entries[-1].box[3], screen.h)
+        with patch.object(page_settings, "gamepad_inventory", return_value=("XInput", [])):
+            for page in PAGES[1:]:
+                app.show(page); self.spin(0.1)
+                self.assertGreaterEqual(app.page.winfo_width(), app.page.winfo_reqwidth(), page)
+
+    def test_the_scale_never_outgrows_the_screen(self):
+        with patch.object(self.tk, "winfo_screenwidth", return_value=1280), patch.object(self.tk, "winfo_screenheight", return_value=800):
+            look.scale_to(self.tk, dpi=215)   # a small dense screen
+        self.addCleanup(setattr, look, "SCALE", 1.0)
+        self.assertLessEqual(look.px(650), 800 - 72 + 1)
+        self.assertLessEqual(look.px(880), 1280)
+        look.scale_to(self.tk, dpi=72)
+        self.assertEqual(look.SCALE, 1.0)
 
     def test_moving_the_mouse_repaints_nothing(self):
         app = self.window()

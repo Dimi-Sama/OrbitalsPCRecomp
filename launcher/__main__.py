@@ -6,6 +6,7 @@ from pathlib import Path
 from tkinter import messagebox
 
 from .core import LauncherError, data_home, instance_lock, setup_logging
+from .look import sharp_windows
 from .ui import Launcher
 
 
@@ -14,6 +15,7 @@ def main():
     parser.add_argument("--data-dir", type=Path, default=data_home(), help="local folder of the profiles")
     parser.add_argument("--game-dir", type=Path, help="select an Orbitals installation")
     args = parser.parse_args()
+    sharp_windows()
     root = tk.Tk()
     root.withdraw()
     try:

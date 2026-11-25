@@ -401,12 +401,12 @@ class HeaderStrip(tk.Canvas):
     the current tab underlined. Left and right go through BACK and the tabs, Enter takes one; down goes to the page (on_down)."""
 
     def __init__(self, parent, title, tabs, current, on_tab, on_back, on_down=lambda: None, height=86):
-        super().__init__(parent, bg=NIGHT, highlightthickness=0, height=height, takefocus=1)
+        super().__init__(parent, bg=NIGHT, highlightthickness=0, height=px(height), takefocus=1)
         fam = set(font.families())
         disp = pick(fam, "Bahnschrift", "DejaVu Sans Condensed", "Liberation Sans Narrow", "Arial Narrow", "TkDefaultFont")
         self.f_title = font.Font(family=disp, size=24, weight="bold"); self.f_tab = font.Font(family=disp, size=13, weight="bold")
         self.f_back = font.Font(family=disp, size=12, weight="bold")
-        self.title, self.tabs, self.current, self.tall = title, tabs, current, height
+        self.title, self.tabs, self.current, self.tall = title, tabs, current, px(height)
         self.places = [on_back] + [lambda p=page: on_tab(p) for page, _ in tabs]
         self.cursor = next((i + 1 for i, (page, _) in enumerate(tabs) if page == current), 0)
         self.focused = False; self.boxes = []
@@ -438,26 +438,27 @@ class HeaderStrip(tk.Canvas):
         self.delete("all")
         w, h = max(self.winfo_width(), 400), self.tall
         back_w = self.f_back.measure("◀  BACK")
-        tw = self.f_title.measure(self.title) + 40
-        x0 = 140
-        split = max(w * 0.42, x0 + tw + 50)   # right of the title, however wide
-        self.create_polygon(0, 0, split, 0, split - 30, h, 0, h, fill=BLUE_D, outline="")
-        self.create_line(split, 0, split - 30, h, fill=GOLD, width=2)
-        self.create_line(split + 10, 0, split - 20, h, fill=INK, width=3)
-        self.create_text(26, h / 2, text="◀  BACK", font=self.f_back, fill=CYAN, anchor="w")
-        self.boxes = [(16, 26 + back_w + 10)]
-        self.create_polygon(x0, 20, x0 + tw, 20, x0 + tw - 12, h - 20, x0 - 12, h - 20, fill=PINK, outline="")
-        self.create_text(x0 + 10, h / 2, text=self.title, font=self.f_title, fill=NIGHT, anchor="w")
-        x = split + 40
+        tw = self.f_title.measure(self.title) + px(40)
+        x0 = px(140)
+        split = max(w * 0.42, x0 + tw + px(50))   # right of the title, however wide
+        self.create_polygon(0, 0, split, 0, split - px(30), h, 0, h, fill=BLUE_D, outline="")
+        self.create_line(split, 0, split - px(30), h, fill=GOLD, width=px(2))
+        self.create_line(split + px(10), 0, split - px(20), h, fill=INK, width=px(3))
+        self.create_text(px(26), h / 2, text="◀  BACK", font=self.f_back, fill=CYAN, anchor="w")
+        self.boxes = [(px(16), px(36) + back_w)]
+        edge, slant = px(20), px(12)
+        self.create_polygon(x0, edge, x0 + tw, edge, x0 + tw - slant, h - edge, x0 - slant, h - edge, fill=PINK, outline="")
+        self.create_text(x0 + px(10), h / 2, text=self.title, font=self.f_title, fill=NIGHT, anchor="w")
+        x = split + px(40)
         for page, lab in self.tabs:
             on = page == self.current
             lw = self.f_tab.measure(lab)
             self.create_text(x, h / 2, text=lab, font=self.f_tab, fill=INK if on else MUTED, anchor="w")
             if on:
-                self.create_rectangle(x, h / 2 + 14, x + lw, h / 2 + 17, fill=CYAN, outline="")
-            self.boxes.append((x - 12, x + lw + 12))
-            x += lw + 34
+                self.create_rectangle(x, h / 2 + px(14), x + lw, h / 2 + px(17), fill=CYAN, outline="")
+            self.boxes.append((x - px(12), x + lw + px(12)))
+            x += lw + px(34)
         if self.focused:
             left, right = self.boxes[self.cursor]
-            self.create_rectangle(left, h / 2 - 22, right, h / 2 + 22, outline=CYAN, width=2)
+            self.create_rectangle(left, h / 2 - px(22), right, h / 2 + px(22), outline=CYAN, width=px(2))
         self.create_line(0, h - 1, w, h - 1, fill=LINE_C, width=1)

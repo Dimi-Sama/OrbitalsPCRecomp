@@ -16,7 +16,7 @@ from .core import (DEFAULT_SETTINGS, LOG, REPO, WINDOWS, LauncherError, Profiles
                    latest_run, launch, launch_kit, outdated_release, prepare_shaders, runtime_info, setup_log, shader_preparation,
                    source_lacks, validate_settings)
 from .demo import DemoScreen
-from .look import BG, CYAN, MUTED, PEACH, RED, ScrollPage, label, px, theme
+from .look import BG, CYAN, MUTED, PEACH, RED, ScrollPage, label, px, scale_to, theme
 from .navigation import Navigation, wanted
 from .neo import Card, HeaderStrip, TitleScreen
 from .pads import Pads
@@ -71,15 +71,16 @@ class Launcher:
         self.calls = queue.Queue()   # functions other threads want run on this one (post)
         self.pending = {}            # settings changed and not written yet (keep, flush)
         self.flush_timer = self.game_timer = None
+        scale_to(root)
         self.font, self.heading_font = theme(root)
         assets = Path(__file__).with_name("assets")
         self.icon = tk.PhotoImage(file=str(assets / "orbitals-icon.png"))
         root.iconphoto(True, self.icon)
         root.title("Liftoff · Orbitals PC Recomp")
         root.configure(bg=BG)
-        root.minsize(880, 650)
-        width = min(1160, root.winfo_screenwidth() - 60)
-        height = min(755, root.winfo_screenheight() - 75)
+        root.minsize(px(880), px(650))
+        width = min(px(1160), max(px(880), root.winfo_screenwidth() - px(60)))
+        height = min(px(755), max(px(650), root.winfo_screenheight() - px(75)))
         root.geometry(f"{width}x{height}")
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.bind("<Destroy>", self.closed, add="+")
@@ -418,10 +419,10 @@ class Launcher:
         self.content = tk.Frame(self.root, bg=BG)
         self.content.grid(row=0, column=0, sticky="nsew")
         self.status_bar = tk.Frame(self.content, bg=BG)
-        self.status_bar.pack(side="bottom", fill="x", padx=18, pady=(4, 8))
+        self.status_bar.pack(side="bottom", fill="x", padx=px(18), pady=(px(4), px(8)))
         self.status = label(self.status_bar, textvariable=self.page_state, color=MUTED, size=9)
         self.status.pack(side="left")
-        self.progress = ttk.Progressbar(self.status_bar, length=134, mode="determinate", maximum=100)
+        self.progress = ttk.Progressbar(self.status_bar, length=px(134), mode="determinate", maximum=100)
         self.stage = tk.Frame(self.content, bg=BG)
         self.stage.pack(fill="both", expand=True)
         self.page = tk.Frame(self.stage, bg=BG)

@@ -136,7 +136,10 @@ Reports are never sent automatically.
 
 ```text
 python -B -m unittest discover -s launcher/tests -v
+python -B -m launcher.tests.shots OUT --size 880x650 --dpi 144
 ```
+
+The second line writes a picture of every page (it needs Pillow).
 
 The launcher runs from source with the standard library and Tk. The tests cover detection, preparation, profile isolation, restores,
 launch errors, graphics settings (including values saved by the earlier French interface), the update check, the installer step

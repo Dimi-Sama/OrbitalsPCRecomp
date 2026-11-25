@@ -26,6 +26,28 @@ def px(n):
     return round(n * SCALE)
 
 
+def sharp_windows():
+    """Windows: the process draws at the screen's own resolution instead of being stretched to it (before any window is made)."""
+    if WINDOWS:
+        import ctypes
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)   # PROCESS_SYSTEM_DPI_AWARE: what Tk 8.6 follows
+        except (OSError, AttributeError):
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except (OSError, AttributeError):
+                pass
+
+
+def scale_to(root, dpi=None):
+    """Sizes and type for the screen's DPI, as far as the smallest window still fits on it."""
+    global SCALE
+    dpi = dpi or root.winfo_fpixels("1i")
+    fits = min(root.winfo_screenwidth() / 900, (root.winfo_screenheight() - 72) / 650)
+    SCALE = max(1.0, min(dpi / 96, fits, 4.0))
+    root.tk.call("tk", "scaling", SCALE * 96 / 72)   # (type is in points: it follows the same scale)
+
+
 def theme(root):
     installed = set(font.families(root))
     body = next((name for name in ("Segoe UI", "Noto Sans", "DejaVu Sans") if name in installed),
@@ -38,23 +60,23 @@ def theme(root):
     style.theme_use("clam")
     style.configure(".", background=BG, foreground=INK, bordercolor=LINE, font=(body, 10))
     style.configure("TButton", background=PANEL, foreground=INK, borderwidth=1,
-                    lightcolor=PANEL, darkcolor=PANEL, focuscolor=CYAN, padding=(13, 8))
+                    lightcolor=PANEL, darkcolor=PANEL, focuscolor=CYAN, padding=(px(13), px(8)))
     style.map("TButton", background=[("disabled", RAIL), ("pressed", LINE), ("focus", SELECTED), ("active", "#222a66")],
               foreground=[("disabled", DISABLED)], bordercolor=[("focus", CYAN), ("active", "#5a6bd0")])
-    style.configure("Play.TButton", background=RED, foreground=BG, padding=(23, 12),
+    style.configure("Play.TButton", background=RED, foreground=BG, padding=(px(23), px(12)),
                     lightcolor=RED, darkcolor=RED, bordercolor=RED, font=(heading, 13, "bold"))
     style.map("Play.TButton", background=[("disabled", PANEL), ("pressed", "#e03a74"), ("focus", "#ff8fb5"), ("active", "#ff77a5")],
               foreground=[("disabled", DISABLED)], bordercolor=[("focus", INK)])
-    style.configure("TEntry", fieldbackground=ENTRY, insertcolor=INK, padding=(8, 5))
-    style.configure("TCombobox", fieldbackground=ENTRY, arrowcolor=CYAN, padding=(7, 5))
-    style.configure("TSpinbox", fieldbackground=ENTRY, arrowcolor=CYAN, insertcolor=INK, padding=(7, 5))
+    style.configure("TEntry", fieldbackground=ENTRY, insertcolor=INK, padding=(px(8), px(5)))
+    style.configure("TCombobox", fieldbackground=ENTRY, arrowcolor=CYAN, arrowsize=px(12), padding=(px(7), px(5)))
+    style.configure("TSpinbox", fieldbackground=ENTRY, arrowcolor=CYAN, insertcolor=INK, padding=(px(7), px(5)))
     style.map("TCombobox", fieldbackground=[("readonly", ENTRY)], selectbackground=[("readonly", ENTRY)],
               selectforeground=[("readonly", INK)], foreground=[("readonly", INK)])
     for name, ground in (("TCheckbutton", BG), ("Panel.TCheckbutton", PANEL)):   # on the page, on a card
-        style.configure(name, background=ground, foreground=INK, indicatorbackground=ENTRY)
+        style.configure(name, background=ground, foreground=INK, indicatorbackground=ENTRY, indicatorsize=px(12))
         style.map(name, indicatorbackground=[("selected", CYAN)],
                   background=[("active", ground)], foreground=[("disabled", DISABLED)])
-    style.configure("TProgressbar", background=CYAN, troughcolor=ENTRY)
+    style.configure("TProgressbar", background=CYAN, troughcolor=ENTRY, thickness=px(16))
     style.layout("Vertical.TScrollbar", [("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
         ("Vertical.Scrollbar.thumb", {"expand": True, "sticky": "nswe"})]})])   # no arrows
     style.configure("Vertical.TScrollbar", background=LINE, troughcolor=RAIL, bordercolor=BG, lightcolor=LINE, darkcolor=LINE,
@@ -80,7 +102,7 @@ def label(parent, text="", *, color=INK, size=10, bold=False, bg=BG, font_family
 def text_box(parent, height=4):
     return tk.Text(parent, height=height, bg=ENTRY, fg=INK, insertbackground=INK,
                    selectbackground=LINE, highlightthickness=1, highlightbackground=LINE,
-                   highlightcolor=CYAN, relief="flat", padx=9, pady=7, wrap="word",
+                   highlightcolor=CYAN, relief="flat", padx=px(9), pady=px(7), wrap="word",
                    font="TkTextFont", undo=True)
 
 
@@ -92,7 +114,7 @@ class ScrollPage(tk.Frame):
         super().__init__(parent, bg=BG)
         self.view = tk.Canvas(self, bg=BG, highlightthickness=0, bd=0)
         self.bar = ttk.Scrollbar(self, command=self.view.yview)
-        self.view.configure(yscrollcommand=self.bar.set, yscrollincrement=20)
+        self.view.configure(yscrollcommand=self.bar.set, yscrollincrement=px(20))
         self.view.pack(side="left", fill="both", expand=True)
         self.body = tk.Frame(self.view, bg=BG)
         self.item = self.view.create_window(0, 0, window=self.body, anchor="nw")
@@ -106,7 +128,7 @@ class ScrollPage(tk.Frame):
         self.view.itemconfigure(self.item, width=self.view.winfo_width())
         self.view.configure(scrollregion=(0, 0, self.view.winfo_width(), self.body.winfo_reqheight()))
         if self.overflows():
-            self.bar.pack(side="right", fill="y", padx=(8, 0))
+            self.bar.pack(side="right", fill="y", padx=(px(8), 0))
         else:
             self.bar.pack_forget()
             self.view.yview_moveto(0)
@@ -130,9 +152,9 @@ class ScrollPage(tk.Frame):
         shown, height = self.view.canvasy(0), self.view.winfo_height()
         total = max(1, self.body.winfo_reqheight())
         if top < shown:
-            self.view.yview_moveto(max(0, top - 12) / total)
+            self.view.yview_moveto(max(0, top - px(12)) / total)
         elif bottom > shown + height:
-            self.view.yview_moveto((bottom + 12 - height) / total)
+            self.view.yview_moveto((bottom + px(12) - height) / total)
 
 
 def native_size(root):

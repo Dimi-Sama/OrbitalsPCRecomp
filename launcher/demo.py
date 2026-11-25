@@ -13,6 +13,8 @@ import random
 import tkinter as tk
 from tkinter import font
 
+from .look import px
+
 BG = "#07060f"
 NEON = ("#3ee8ff", "#ff3ea5", "#ffb13d", "#8f6bff")
 SCROLL = ("      LIFTOFF  //  ORBITALS PC RECOMP  //  NATIVE PC PORT BY STATIC RECOMPILATION  //  BUILT ON SWITCHRECOMP BY MZ LABS  //  "
@@ -89,20 +91,20 @@ class DemoScreen(tk.Canvas):
         self.w, self.h = w, h
         getattr(self, "_layout_" + self.style)(w, h)
         title_y = h * 0.12 if self.style != "stars" else h * 0.17
-        self.title_shadow = self.create_text(w / 2 + 3, title_y + 3, text=self.title, font=self.f_title, fill="#2a0c3a")
+        self.title_shadow = self.create_text(w / 2 + px(3), title_y + px(3), text=self.title, font=self.f_title, fill="#2a0c3a")
         self.title_item = self.create_text(w / 2, title_y, text=self.title, font=self.f_title, fill=NEON[0])
         # sine scroller: one text item per visible character
         self.char_w = font.Font(font=self.f_scroll).measure("M")
         self.scroll_items = [self.create_text(0, 0, text="", font=self.f_scroll, fill=NEON[2], anchor="w")
                              for _ in range(int(w / self.char_w) + 3)]
         # segmented progress bar on a dark band, readable over any background
-        self.seg_n = 40; bar_w = min(w - 60, 640); self.bar_x = (w - bar_w) / 2; self.bar_y = h * 0.76; self.seg_w = bar_w / self.seg_n
-        self.create_rectangle(0, self.bar_y - 14, w, h, fill=BG, outline="")
-        self.create_rectangle(self.bar_x - 4, self.bar_y - 4, self.bar_x + bar_w + 4, self.bar_y + 22, outline=NEON[0], width=1)
-        self.segs = [self.create_rectangle(self.bar_x + i * self.seg_w + 1, self.bar_y, self.bar_x + (i + 1) * self.seg_w - 2, self.bar_y + 18,
+        self.seg_n = 40; bar_w = min(w - px(60), px(640)); self.bar_x = (w - bar_w) / 2; self.bar_y = h * 0.76; self.seg_w = bar_w / self.seg_n
+        self.create_rectangle(0, self.bar_y - px(14), w, h, fill=BG, outline="")
+        self.create_rectangle(self.bar_x - 4, self.bar_y - 4, self.bar_x + bar_w + 4, self.bar_y + px(18) + 4, outline=NEON[0], width=1)
+        self.segs = [self.create_rectangle(self.bar_x + i * self.seg_w + 1, self.bar_y, self.bar_x + (i + 1) * self.seg_w - 2, self.bar_y + px(18),
                                            fill="#141226", outline="") for i in range(self.seg_n)]
-        self.pct_item = self.create_text(w / 2, self.bar_y + 40, text="", font=self.f_text, fill="#e8e6ff")
-        self.detail_item = self.create_text(w / 2, self.bar_y + 60, text="", font=self.f_text, fill="#8e8aa8", width=w - 40)
+        self.pct_item = self.create_text(w / 2, self.bar_y + px(40), text="", font=self.f_text, fill="#e8e6ff")
+        self.detail_item = self.create_text(w / 2, self.bar_y + px(60), text="", font=self.f_text, fill="#8e8aa8", width=w - px(40))
         for y in range(0, h, 3):   # scanlines
             self.create_line(0, y, w, y, fill="#000000", stipple="gray25")
         self.items_ready = True
@@ -124,7 +126,7 @@ class DemoScreen(tk.Canvas):
         n = int((self.code_bottom - self.code_top) / self.code_h) + 2
         self.code_rows = [(self.create_text(24, 0, text="", font=self.f_code, fill="#2f8f5f", anchor="w"),
                            self.create_text(24 + w * 0.30, 0, text="", font=self.f_code, fill="#4fd0a0", anchor="w")) for _ in range(n)]
-        self.create_rectangle(0, self.code_top - 30, w * 0.66, self.code_top - 2, fill=BG, outline="")   # the listing scrolls under the title
+        self.create_rectangle(0, self.code_top - px(30), w * 0.66, self.code_top - 2, fill=BG, outline="")   # the listing scrolls under the title
         # a wireframe: an icosahedron, the vector object of the era
         g = (1 + 5 ** 0.5) / 2
         self.verts = [(-1, g, 0), (1, g, 0), (-1, -g, 0), (1, -g, 0), (0, -1, g), (0, 1, g), (0, -1, -g), (0, 1, -g),
