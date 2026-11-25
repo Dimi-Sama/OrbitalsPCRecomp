@@ -3,6 +3,7 @@
 
 A page that raises while it is built (v0.1.5-preview.1: the home page's shader line passed justify twice) leaves the launcher closed
 for the player; the core tests do not build any widget. Skipped where Tk has no display."""
+import ctypes
 import shutil
 import tempfile
 import time
@@ -12,7 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from launcher import core, graphics, look, page_settings, page_tools, ui
+from launcher import core, desktop, graphics, look, page_settings, page_tools, ui
 from launcher.neo import TitleScreen
 from launcher.tasks import Stopped
 from launcher.ui import Launcher
@@ -467,6 +468,20 @@ class LauncherWindowTest(LauncherWindow):
             for x in range(5, 60):
                 screen._hover(SimpleNamespace(x=x, y=5))
         configure.assert_not_called()
+
+    @unittest.skipUnless(core.WINDOWS, "the Windows taskbar")
+    def test_the_window_windows_shows_has_the_icon_and_the_identity(self):
+        self.window()   # (Tk makes the real window when it is shown: what was set before is not on it)
+        self.spin(0.4)
+        user = ctypes.windll.user32
+        user.SendMessageW.restype = ctypes.c_void_p
+        user.SendMessageW.argtypes = (ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p)
+        for full in (False, True, False):
+            self.tk.attributes("-fullscreen", full); self.spin(0.5)
+            frame = int(self.tk.wm_frame(), 16)
+            for which in (0, 1):
+                self.assertTrue(user.SendMessageW(frame, 0x7f, which, None), f"icon {which}, full screen {full}")   # WM_GETICON
+            self.assertEqual(desktop.window_identity(frame), desktop.APP_ID)
 
     def test_title_screen_is_still_while_a_game_runs(self):
         app = self.window()

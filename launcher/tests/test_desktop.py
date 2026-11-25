@@ -48,6 +48,12 @@ class DrawnTest(unittest.TestCase):
         count = struct.unpack("<HHH", data[:6])[2]
         self.assertEqual([data[6 + 16 * i] or 256 for i in range(count)], [16, 20, 24, 32, 40, 48, 64, 128, 256])
 
+    def test_the_icons_small_sizes_are_bitmaps(self):
+        data = desktop.ICON.read_bytes()   # (Tk sets no icon at all from one with PNG in it)
+        for i in range(struct.unpack("<HHH", data[:6])[2]):
+            size, length, offset = data[6 + 16 * i], *struct.unpack("<II", data[6 + 16 * i + 8:6 + 16 * i + 16])
+            self.assertEqual(data[offset + 1:offset + 4] == b"PNG", size == 0)
+
     def test_the_typefaces_and_their_licence_are_there(self):
         self.assertTrue(list(fonts.FOLDER.glob("*.ttf")))
         self.assertIn("SIL Open Font License", (fonts.FOLDER / "OFL.txt").read_text(encoding="utf-8"))

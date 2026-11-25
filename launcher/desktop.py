@@ -84,28 +84,67 @@ def identity():
 
 
 def dress(root, ground, ink):
-    """The window itself: its icon, a title bar in the launcher's colours, and what a pin on the taskbar starts."""
+    """The window itself: its icon, a title bar in the launcher's colours, and what a pin on the taskbar starts. Windows shows none of it
+    on a window that was not made yet, and Tk makes the real one (its frame) when it is shown, and again when its kind changes: so each
+    frame is dressed as it appears."""
     if not WINDOWS:
         return
-    root.iconbitmap(default=str(ICON))
-    window = int(root.wm_frame(), 16)
+    try:
+        root.iconbitmap(default=str(ICON))   # the other windows' too
+    except Exception as error:   # (a TclError: the icon is not worth the launcher)
+        LOG.warning("event=icon_failed type=%s", type(error).__name__)
+    dressed = []
+
+    def look(_event=None):
+        frame = int(root.wm_frame(), 16)
+        if root.winfo_ismapped() and frame not in dressed:
+            dressed[:] = [frame]
+            dress_frame(frame, ground, ink)
+
+    root.bind("<Map>", lambda e: root.after_idle(look) if e.widget is root else None, add="+")
+    root.bind("<Configure>", lambda e: look() if e.widget is root else None, add="+")
+
+
+def dress_frame(frame, ground, ink):
+    user = ctypes.windll.user32
+    window = ctypes.c_void_p(frame)
+    user.LoadImageW.restype = ctypes.c_void_p
+    user.SendMessageW.argtypes = (ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p)
+    for which, metric in ((0, 49), (1, 11)):   # small (the title bar), big (the taskbar, Alt+Tab): the drawing of that size
+        size = user.GetSystemMetrics(metric)
+        icon = user.LoadImageW(None, str(ICON), 1, size, size, 0x10)
+        if icon:
+            user.SendMessageW(window, 0x80, which, icon)   # WM_SETICON
     colour = lambda c: int(c[5:7] + c[3:5] + c[1:3], 16)   # 0x00BBGGRR
     for attribute, value in ((20, 1), (35, colour(ground)), (36, colour(ink))):   # dark mode; Windows 11: the caption, its text
         try:
-            ctypes.windll.dwmapi.DwmSetWindowAttribute(ctypes.c_void_p(window), attribute, ctypes.byref(ctypes.c_int(value)), 4)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(window, attribute, ctypes.byref(ctypes.c_int(value)), 4)
         except (OSError, AttributeError):
             pass
     try:
         pointer = ctypes.c_void_p()
-        if ctypes.windll.shell32.SHGetPropertyStoreForWindow(ctypes.c_void_p(window), ctypes.byref(Guid.of(PROPERTY_STORE)),
-                                                             ctypes.byref(pointer)) >= 0:
-            store = Com(pointer)
-            for number, text in ((5, APP_ID), (2, f'"{python()}" -B "{START}"'), (4, NAME), (3, f"{ICON},0")):
-                store.put(number, text)
-            store.call(7)   # Commit
-            store.release()
+        answer = ctypes.windll.shell32.SHGetPropertyStoreForWindow(window, ctypes.byref(Guid.of(PROPERTY_STORE)), ctypes.byref(pointer))
+        if answer < 0:
+            raise OSError(f"Windows answered {answer & 0xffffffff:#x}")
+        store = Com(pointer)
+        # (the id last: the taskbar takes the others when it changes)
+        for number, text in ((2, f'"{python()}" -B "{START}"'), (4, NAME), (3, f"{ICON},0"), (5, APP_ID)):
+            store.put(number, text)
+        store.call(7)   # Commit
+        store.release()
     except (OSError, AttributeError) as error:
         LOG.warning("event=taskbar_identity_failed type=%s", type(error).__name__)
+
+
+def window_identity(frame):
+    """The application id a window has, or None (for the tests)."""
+    pointer, value = ctypes.c_void_p(), PropertyText()
+    if ctypes.windll.shell32.SHGetPropertyStoreForWindow(ctypes.c_void_p(frame), ctypes.byref(Guid.of(PROPERTY_STORE)), ctypes.byref(pointer)) < 0:
+        return None
+    store = Com(pointer)
+    store.call(5, ctypes.byref(PropertyKey(Guid.of(APP_MODEL), 5)), ctypes.byref(value))   # GetValue
+    store.release()
+    return value.text if value.kind == 31 else None
 
 
 def desktop_folder():

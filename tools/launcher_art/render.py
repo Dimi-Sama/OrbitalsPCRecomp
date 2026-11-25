@@ -173,10 +173,27 @@ def step_of(pitch):
     return pitch * 0.6
 
 
+def bitmap(picture):
+    """A picture as an icon file holds one: a bitmap from its last row to its first, then a mask. (Tk reads no PNG in an icon.)"""
+    n = picture.width
+    data = picture.tobytes("raw", "BGRA", 0, -1)
+    alpha = picture.getchannel("A").load()
+    stride = (n + 31) // 32 * 4
+    mask = bytearray(stride * n)
+    for y in range(n):
+        for x in range(n):
+            if alpha[x, n - 1 - y] == 0:
+                mask[y * stride + x // 8] |= 0x80 >> (x % 8)
+    return struct.pack("<IiiHHIIiiII", 40, n, 2 * n, 1, 32, 0, len(data) + len(mask), 0, 0, 0, 0) + data + bytes(mask)
+
+
 def ico(path, font):
-    """A Windows icon: each size drawn for itself, all as PNG."""
+    """A Windows icon: each size drawn for itself; the largest as PNG."""
     pictures = []
     for size in ICON_SIZES:
+        if size < 256:
+            pictures.append((size, bitmap(icon(font, size))))
+            continue
         out = io.BytesIO()
         icon(font, size).save(out, format="PNG", optimize=True)
         pictures.append((size, out.getvalue()))
