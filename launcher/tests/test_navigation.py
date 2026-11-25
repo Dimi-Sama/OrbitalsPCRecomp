@@ -1,6 +1,8 @@
 # Orbitals PC Recomp, a work based on SwitchRecomp by MZ Labs. GNU AGPL v3.0 with the additional terms of NOTICE.txt (LICENSE.txt).
 """The controller in the launcher (pads.py, navigation.py) and the dialogs it answers (dialogs.py)."""
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from launcher import dialogs, navigation, page_settings, pads
@@ -42,6 +44,33 @@ class PadsTest(unittest.TestCase):
             self.assertFalse(found.available)
             self.assertIsNone(found.names())
             self.assertEqual(found.held(), set())
+
+    def test_the_game_folders_library_is_never_the_one_loaded(self):
+        with tempfile.TemporaryDirectory() as folder:
+            game, own = Path(folder) / "game", Path(folder) / "own"
+            game.mkdir()
+            (game / "SDL3.dll").write_bytes(b"one")
+            self.assertEqual(pads.own_copy(game / "SDL3.dll", own), own)
+            (game / "SDL3.dll").write_bytes(b"another")   # the game was recompiled
+            self.assertEqual(pads.own_copy(game / "SDL3.dll", own), own)
+            self.assertEqual((own / "SDL3.dll").read_bytes(), b"another")
+            self.assertIsNone(pads.own_copy(game / "missing.dll", own))
+
+    def test_a_backend_that_fails_is_not_asked_again(self):
+        class Broken:
+            asked = 0
+
+            def held(self):
+                Broken.asked += 1
+                raise OSError("access violation")
+
+        found = pads.Pads()
+        found.backend = Broken()
+        for _ in range(3):
+            self.assertEqual(found.held(), set())
+        self.assertEqual(Broken.asked, 1)
+        found.open()
+        self.assertFalse(found.available)
 
     def test_automatic_is_off_on_the_decks_desktop_only(self):
         for deck, gaming, on in ((False, False, True), (True, False, False), (True, True, True)):

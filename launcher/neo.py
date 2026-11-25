@@ -300,7 +300,7 @@ class TitleScreen(tk.Canvas):
             widths = [max(self.f_tag.measure(tag[0]), self.f_value.measure(tag[1])) + pad for tag in self.tags]
             if sum(widths) + gap * (len(widths) - 1) <= room:
                 break
-        else:   # the last chip (the profile, up to 32 characters) gives way
+        else:   # the last chip gives way
             widths[-1] = max(self.f_tag.measure(self.tags[-1][0]) + pad, room - sum(widths[:-1]) - gap * (len(widths) - 1))
         for spot, width in zip(self.chips, widths):
             spot.box = (x, y, x + width, y + px(56))

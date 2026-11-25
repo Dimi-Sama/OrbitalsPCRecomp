@@ -1045,12 +1045,17 @@ def discard_unfinished(step, install_dir, started):
     One from before this setup is left (the objects compiled so far are kept in any case)."""
     unfinished = {3: REPO / "bin" / ("runtime_win64_win32.exe" if WINDOWS else "runtime_linux_x11"),
                   4: install_dir / "Orbitals" / MODULE}.get(step)
-    try:
-        if unfinished and unfinished.stat().st_mtime >= started - 2:
-            unfinished.unlink()
-            LOG.info("event=unfinished_discarded file=%s", unfinished.name)
-    except FileNotFoundError:
-        pass
+    for _ in range(50):   # (Windows lets go of an ended process's file a moment later)
+        try:
+            if unfinished and unfinished.stat().st_mtime >= started - 2:
+                unfinished.unlink()
+                LOG.info("event=unfinished_discarded file=%s", unfinished.name)
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            time.sleep(0.1)
+    raise LauncherError(f"{unfinished} is not complete and could not be removed: delete it before installing again.")
 
 
 def install_from_files(game_data, install_dir=None, on_progress=lambda step, total, text: None, command=None, rebuild=False, task=None):

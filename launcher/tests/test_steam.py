@@ -41,7 +41,7 @@ class SteamTest(unittest.TestCase):
         self.assertEqual((rows[1]["Exe"], rows[1]["LaunchOptions"], rows[1]["StartDir"]),
                          ('"C:/Python/pythonw.exe"', "-B -m launcher", '"C:/kit"'))
         self.assertTrue(before.startswith(b"\x00shortcuts\x00\x000\x00"))
-        self.assertTrue((self.user / "shortcuts.vdf.before-orbitals").is_file())
+        self.assertEqual((self.user / "shortcuts.vdf.before-orbitals").read_bytes(), before, "the list before the launcher's first entry")
         self.assertFalse(list(self.user.glob("*.part")))
 
     def test_a_moved_kit_replaces_its_entry(self):

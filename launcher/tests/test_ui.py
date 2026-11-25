@@ -6,6 +6,7 @@ for the player; the core tests do not build any widget. Skipped where Tk has no 
 import ctypes
 import shutil
 import tempfile
+import threading
 import time
 import tkinter as tk
 import unittest
@@ -13,13 +14,16 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from launcher import core, desktop, graphics, look, page_settings, page_tools, ui
+from launcher import core, desktop, dialogs, graphics, look, page_settings, page_tools, report_form, rows, ui
 from launcher.neo import TitleScreen
 from launcher.tasks import Stopped
 from launcher.ui import Launcher
 from launcher.tests.test_launcher import build_fixture
 
 PAGES = ("Home", "Saves", "Graphics", "Controls", "Settings", "Files", "Tools")
+
+
+HOVERED = rows.Row.hovered
 
 
 class LauncherWindow(unittest.TestCase):
@@ -29,6 +33,7 @@ class LauncherWindow(unittest.TestCase):
         except tk.TclError as error:
             self.skipTest(f"no display for Tk: {error}")
         self.tk.withdraw()
+        p = patch.object(rows.Row, "hovered", lambda *_: None); p.start(); self.addCleanup(p.stop)   # (the mouse of whoever runs the tests)
         self.root = Path(tempfile.mkdtemp(prefix="orbitals-ui-"))
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
         self.addCleanup(self.tk.destroy)
@@ -60,6 +65,15 @@ class LauncherWindow(unittest.TestCase):
             self.tk.update()
             time.sleep(0.01)
 
+    def until(self, condition, seconds=20):
+        """Wait for something, however busy the computer is."""
+        end = time.monotonic() + seconds
+        while not condition():
+            self.assertLess(time.monotonic(), end, "it did not come")
+            self.tk.update()
+            time.sleep(0.01)
+        self.spin(0.05)
+
     def title(self, app):
         return next(w for w in app.page.winfo_children() if isinstance(w, TitleScreen))
 
@@ -90,17 +104,23 @@ class LauncherWindowTest(LauncherWindow):
     def test_title_entries_are_enabled_again_after_any_job(self):
         app = self.window()
         done = []
-        app.background("Copying…", lambda: time.sleep(0.2), done.append)
+        go_on = threading.Event()
+        app.background("Copying…", lambda: go_on.wait(20), done.append)
         self.spin(0.05)
         self.assertFalse(self.title(app).entries[0].enabled, "PLAY while a job runs")
         self.assertIsNone(self.title(app).card)
-        self.spin(0.8)
-        self.assertTrue(done)
+        go_on.set()
+        self.until(lambda: done)
         self.assertTrue(self.title(app).entries[0].enabled, "PLAY after it")
+
+    def controllers(self, app, *names):
+        """As if these were connected, also for the watch that asks every second."""
+        app.pad_names = list(names)
+        p = patch.object(app.pads, "names", return_value=list(names)); p.start(); self.addCleanup(p.stop)
 
     def test_chips_and_controllers_lead_to_their_pages(self):
         app = self.window()
-        app.pad_names = ["Pad"]
+        self.controllers(app, "Pad")
         app.show("Home")
         for pick, page in ((lambda s: s.chips[0], "Files"), (lambda s: next(e for e in s.entries if e.label == "SAVES"), "Saves"), (lambda s: s.pads_spot, "Controls")):
             app.show("Home"); self.spin(0.1)
@@ -121,7 +141,7 @@ class LauncherWindowTest(LauncherWindow):
 
     def test_the_arrows_reach_everything_on_the_title_screen(self):
         app = self.window()
-        app.pad_names = ["Pad", "Other pad"]
+        self.controllers(app, "Pad", "Other pad")
         app.show("Home"); self.spin(0.2)
         screen = self.title(app)
         self.assertEqual(screen.pads[0], "2 controllers: Pad, Other pad")
@@ -160,7 +180,7 @@ class LauncherWindowTest(LauncherWindow):
 
         with patch.object(ui.dialogs, "error") as dialog:
             app.background("Installing…", fails, None, demo="RECOMPILING ORBITALS", retry=lambda: tried.append(1))
-            self.spin(0.5)
+            self.until(lambda: app.notice)
         dialog.assert_not_called()
         card = self.title(app).card
         self.assertTrue(card.alarm)
@@ -197,9 +217,11 @@ class LauncherWindowTest(LauncherWindow):
         native = self.root / "game"
         build_fixture(native)
 
+        go_on = threading.Event()
+
         def setup(source, on_progress, task, rebuild=False):
-            for done in range(3):
-                on_progress(4, 5, f"compiled {done * 100}/400 (1s)"); time.sleep(0.15)
+            on_progress(4, 5, "compiled 100/400 (1s)")
+            go_on.wait(20)
             return core.installation(native)
 
         with patch.object(ui, "install_from_files", side_effect=setup):
@@ -207,10 +229,11 @@ class LauncherWindowTest(LauncherWindow):
             self.spin(0.1)
             self.assertEqual(app.active_page, "Home")   # its demo
             self.assertIn("Stop", self.buttons(app.page))
-            app.show("Files"); self.spin(0.3)
-            colours = [line.cget("fg") for _, line in app.view.steps]
-            self.assertEqual(colours, [look.CYAN] * 3 + [look.INK, look.MUTED])
-            self.spin(0.6)
+            app.show("Files")
+            self.until(lambda: app.install_step == 4)
+            self.until(lambda: [line.cget("fg") for _, line in app.view.steps] == [look.CYAN] * 3 + [look.INK, look.MUTED])
+            go_on.set()
+            self.until(lambda: app.job is None)
         self.assertEqual(app.game.root, native.resolve())
         self.assertEqual((app.active_page, app.card().title), ("Home", "Shaders are not prepared"))
 
@@ -221,7 +244,7 @@ class LauncherWindowTest(LauncherWindow):
             app.set_source(self.root / "game")
             app.start_install()
             app.show("Files")
-            self.spin(0.4)
+            self.until(lambda: app.job is None)
         self.assertEqual(app.active_page, "Files")
         self.assertIn("Try again", self.buttons(app.page))
 
@@ -241,8 +264,8 @@ class LauncherWindowTest(LauncherWindow):
             app.close()
             self.assertTrue(self.tk.winfo_exists())
             ask.return_value = True
-            app.stop_job(); self.spin(0.5)
-        self.assertIsNone(app.job)
+            app.stop_job()
+            self.until(lambda: app.job is None)
         self.assertIsNone(app.notice, "a stop is not a failure")
         self.assertIn("kept", app.page_state.get())
         self.assertEqual(app.card().title, "Shaders are not prepared")
@@ -282,7 +305,7 @@ class LauncherWindowTest(LauncherWindow):
         app.show("Saves")
         app.view.rows.choose("Back up")
         app.background("Copying…", lambda: time.sleep(0.1), lambda _: None)
-        self.spin(0.5)
+        self.until(lambda: app.job is None)
         self.assertEqual(app.view.rows.selected.caption, "Back up")
         app.show("Settings")
         row = self.row(app, "GitHub issues page")
@@ -296,7 +319,7 @@ class LauncherWindowTest(LauncherWindow):
         with patch.object(page_tools.steam, "add", side_effect=core.LauncherError("Steam was not found on this PC.")) as add:
             app.view.rows.choose("Add to Steam")
             self.row(app, "Add to Steam").press()
-            self.spin(0.6)
+            self.until(lambda: "Adding…" not in self.row(app, "Add to Steam").describe())
         self.assertEqual(set(add.call_args.args[0]), {"p.png", ".png", "_hero.png", "_logo.png"})
         self.assertIn("not found", self.row(app, "Add to Steam").describe())
 
@@ -319,7 +342,8 @@ class LauncherWindowTest(LauncherWindow):
             app.show("Controls")
             self.assertIsNone(app.job)
             app.keep(keyboard=2)
-            self.spin(0.6)
+            self.until(lambda: scan.call_count and not app.pending)
+            self.spin(0.3)
         self.assertEqual(scan.call_count, 1)
         dialog.assert_not_called()
         self.assertEqual(app.profiles.settings["keyboard"], 2)
@@ -333,7 +357,7 @@ class LauncherWindowTest(LauncherWindow):
         app.show("Graphics")   # another tab, before they are written
         self.assertEqual(app.profiles.settings["volume"], 90)
         self.row(app, "VSync").press()
-        self.spin(0.5)
+        self.until(lambda: not app.pending)
         self.assertFalse(app.profiles.settings["vsync"])
         self.assertEqual(core.Profiles(app.local).settings["volume"], 90)
 
@@ -482,6 +506,78 @@ class LauncherWindowTest(LauncherWindow):
             for which in (0, 1):
                 self.assertTrue(user.SendMessageW(frame, 0x7f, which, None), f"icon {which}, full screen {full}")   # WM_GETICON
             self.assertEqual(desktop.window_identity(frame), desktop.APP_ID)
+
+    def test_the_shaders_text_keeps_its_commas(self):
+        app = self.window()
+        with patch.object(ui, "shader_preparation", return_value={"discovered": 23134, "validated": 23130, "failed": 4, "seconds": 900,
+                                                                  "at": "2026-11-25T18:00:00"}):
+            text = app.shader_state_text()
+        self.assertIn("23 130 prepared and validated of 23 134, 4 not supported by the translator (2026-11-25, 15 min).", text)
+
+    def test_a_failure_is_dismissed_on_game_files_too(self):
+        app = self.window()
+        app.fail("It failed", "Why.")
+        app.show("Files")
+        self.buttons(app.page)["Dismiss"].invoke()
+        self.assertNotIn("Dismiss", self.buttons(app.page))
+
+    def test_settings_that_cannot_be_written_do_not_hold_the_player(self):
+        app = self.window()
+        app.show("Graphics")
+        app.keep(vsync=False)
+        with patch.object(app.profiles, "update_active", side_effect=PermissionError("in use")), patch.object(ui.dialogs, "error") as said:
+            app.show("Home")
+        said.assert_called_once()
+        self.assertEqual(app.active_page, "Home")
+        app.flush()   # and they are not lost
+        self.assertFalse(app.profiles.settings["vsync"])
+
+    def test_the_mouse_selects_a_row_when_it_moves_not_when_the_page_scrolls(self):
+        app = self.window()
+        app.show("Tools"); self.spin(0.2)
+        self.tk.focus_force(); self.spin(0.1)
+        first, second = app.view.rows.items[:2]
+        first.focus_set(); self.spin(0.1)
+        hovered = HOVERED   # (as the tests' own window has it turned off)
+        at = SimpleNamespace(x_root=app.view.rows.pointer[0], y_root=app.view.rows.pointer[1])
+        hovered(second, at); self.spin(0.1)   # the page moved under a mouse that did not
+        self.assertIs(app.view.rows.selected, first)
+        hovered(second, SimpleNamespace(x_root=at.x_root + 3, y_root=at.y_root)); self.spin(0.1)
+        if self.tk.focus_displayof() is not None:
+            self.assertIs(app.view.rows.selected, second)
+
+    def test_a_typed_report_is_not_closed_by_a_key(self):
+        app = self.window()
+        app.show("Tools"); self.spin(0.1)
+        self.tk.focus_force(); self.spin(0.1)
+        if self.tk.focus_displayof() is None:
+            self.skipTest("the window cannot be brought to the front here")
+        app.report(); self.spin(0.3)
+        form = next(w for w in self.tk.winfo_children() if w.winfo_class() == "Toplevel")
+        with patch.object(report_form.dialogs, "confirm", return_value=False) as ask:
+            self.assertEqual(self.tk.focus_get().winfo_toplevel(), form, "the keys are the form's, not the page's under it")
+            text = next(w for w in self.every(form) if w.winfo_class() == "Text")
+            text.insert("1.0", "It stops.")
+            self.tk.focus_get().event_generate("<Escape>"); self.spin(0.1)
+            self.assertTrue(form.winfo_exists())
+            ask.return_value = True
+            self.tk.focus_get().event_generate("<Escape>"); self.spin(0.1)
+        self.assertFalse(form.winfo_exists())
+
+    def every(self, widget):
+        for child in widget.winfo_children():
+            yield child
+            if child.winfo_class() != "TCombobox":
+                yield from self.every(child)
+
+    def test_the_arrows_pass_a_drop_down_list(self):
+        app = self.window()
+        app.report(); self.spin(0.2)
+        form = next(w for w in self.tk.winfo_children() if w.winfo_class() == "Toplevel")
+        box = next(w for w in self.every(form) if w.winfo_class() == "TCombobox")
+        box.tk.call("ttk::combobox::PopdownWindow", box)   # opened once: it has a window Tkinter does not know
+        button = next(w for w in self.every(form) if w.winfo_class() == "TButton")
+        self.assertTrue(dialogs.toward(button, 1, 0, form))
 
     def test_title_screen_is_still_while_a_game_runs(self):
         app = self.window()

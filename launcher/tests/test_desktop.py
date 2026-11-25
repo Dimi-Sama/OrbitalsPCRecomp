@@ -51,7 +51,7 @@ class DrawnTest(unittest.TestCase):
     def test_the_icons_small_sizes_are_bitmaps(self):
         data = desktop.ICON.read_bytes()   # (Tk sets no icon at all from one with PNG in it)
         for i in range(struct.unpack("<HHH", data[:6])[2]):
-            size, length, offset = data[6 + 16 * i], *struct.unpack("<II", data[6 + 16 * i + 8:6 + 16 * i + 16])
+            size, offset = data[6 + 16 * i], struct.unpack("<I", data[6 + 16 * i + 12:6 + 16 * i + 16])[0]
             self.assertEqual(data[offset + 1:offset + 4] == b"PNG", size == 0)
 
     def test_the_typefaces_and_their_licence_are_there(self):

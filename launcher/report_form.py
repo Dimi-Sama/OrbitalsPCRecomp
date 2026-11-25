@@ -38,8 +38,8 @@ class ReportForm:
         self.window.transient(app.root)
         self.window.minsize(px(680), px(560))
         self.window.geometry(f"{px(780)}x{px(640)}")
-        self.window.grab_set()
-        self.busy = False
+        dialogs.grab(self.window)
+        self.busy = self.written = False
         self.window.protocol("WM_DELETE_WINDOW", self.close)
         self.window.bind("<Escape>", lambda e: self.close())
         body = tk.Frame(self.window, bg=BG)
@@ -53,7 +53,9 @@ class ReportForm:
         ttk.Combobox(title_row, textvariable=self.category, values=ISSUE_TYPES, state="readonly", width=22).pack(
             side="left", padx=(0, px(8)))
         self.title = tk.StringVar()
-        ttk.Entry(title_row, textvariable=self.title).pack(side="left", fill="x", expand=True)
+        title = ttk.Entry(title_row, textvariable=self.title)
+        title.pack(side="left", fill="x", expand=True)
+        title.focus_set()   # (opened by a key or a controller: what follows is for this window)
         label(body, "Problem type and title", color=MUTED, size=9).pack(anchor="w", pady=(px(2), px(5)))
         form = tk.Frame(body, bg=BG)
         form.pack(fill="both", expand=True)
@@ -105,7 +107,11 @@ class ReportForm:
         app.button(actions, "Issues GitHub", app.issues).pack(side="right")
 
     def close(self):
-        if not self.busy:
+        if self.busy:
+            return
+        typed = self.title.get().strip() or any(field.get("1.0", "end").strip() for field in self.inputs.values())
+        if not typed or self.written or dialogs.confirm(self.window, "Close the report?", "What you typed is lost.", yes="Close", no="Go on",
+                                                        alarm=True):
             self.window.destroy()
 
     def choose_saves(self):
@@ -115,7 +121,7 @@ class ReportForm:
         view = tk.Toplevel(self.window, bg=BG, padx=px(15), pady=px(13))
         view.title("Save copies")
         view.transient(self.window)
-        view.grab_set()
+        dialogs.grab(view)
         label(view, "Choose the files you want to attach.", bold=True).pack(anchor="w")
         label(view, "Public attachments can be read by other people.",
               color=PEACH).pack(anchor="w", pady=(px(4), px(7)))
@@ -129,7 +135,7 @@ class ReportForm:
             self.selected_saves = tuple(name for name, var in variables.items() if keep and var.get())
             self.options["saves"].set(bool(self.selected_saves))
             view.destroy()
-            self.window.grab_set()
+            dialogs.grab(self.window)
 
         self.app.button(view, "Confirm the selection", lambda: done(True)).pack(anchor="e", pady=(px(10), 0))
         view.protocol("WM_DELETE_WINDOW", lambda: done(False))
@@ -173,7 +179,7 @@ class ReportForm:
         view.title("Report preview")
         view.transient(self.window)
         view.geometry(f"{px(700)}x{px(560)}")
-        view.grab_set()
+        dialogs.grab(view)
         view.columnconfigure(1, weight=1)
         view.rowconfigure(1, weight=1)
         headline(view, "Report contents", size=18).grid(row=0, column=0, columnspan=2, sticky="w")
@@ -207,7 +213,7 @@ class ReportForm:
 
         def close():
             view.destroy()
-            self.window.grab_set()
+            dialogs.grab(self.window)
 
         def copy():
             view.clipboard_clear()
@@ -219,6 +225,7 @@ class ReportForm:
                     view, "Confirm the saves", "Include these binary copies in the local ZIP?", yes="Include them"):
                 return
             destination = report.write(self.app.local / "reports")
+            self.written = True
             self.status.set(f"ZIP created · {destination.name}")
             close()
 

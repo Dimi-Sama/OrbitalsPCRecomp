@@ -155,8 +155,9 @@ def add_entry(vdf, exe, arguments, folder, icon):
     rows.append({"appid": struct.unpack("<i", struct.pack("<I", appid))[0], "AppName": NAME, "Exe": f'"{exe}"', "StartDir": f'"{folder}"',
                  "icon": str(icon), "ShortcutPath": "", "LaunchOptions": arguments, "IsHidden": 0, "AllowDesktopConfig": 1, "AllowOverlay": 1,
                  "OpenVR": 0, "Devkit": 0, "DevkitGameID": "", "DevkitOverrideAppID": 0, "LastPlayTime": 0, "FlatpakAppID": "", "tags": {}})
-    if vdf.is_file():
-        shutil.copy2(vdf, vdf.with_name("shortcuts.vdf.before-orbitals"))
+    before = vdf.with_name("shortcuts.vdf.before-orbitals")
+    if vdf.is_file() and not before.exists():
+        shutil.copy2(vdf, before)
     root[key] = {str(i): row for i, row in enumerate(rows)}
     write_new(vdf, write_map(root))   # never a half-written file Steam would drop every shortcut from
 

@@ -6,6 +6,7 @@ Windows. Everything is called from the Tk thread. Closed while a game runs: the 
 
 import ctypes
 import os
+import shutil
 from pathlib import Path
 
 WINDOWS = os.name == "nt"
@@ -182,6 +183,19 @@ def backends(folders):
         yield SDL2, "libSDL2-2.0.so.0"
 
 
+def own_copy(library, folder):
+    """A copy of a library for this process, in `folder`: Windows keeps a loaded file locked, and the next recompile of the game replaces
+    the one in its folder. Returns the folder, or None."""
+    try:
+        wanted, here = Path(library).stat(), Path(folder) / Path(library).name
+        if not here.is_file() or (here.stat().st_size, int(here.stat().st_mtime)) != (wanted.st_size, int(wanted.st_mtime)):
+            here.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(library, here)
+        return here.parent
+    except OSError:
+        return None
+
+
 class Pads:
     """The controllers. open() starts the first backend that works; scan() looks for new and gone ones, held() for buttons."""
 
@@ -208,12 +222,19 @@ class Pads:
             self.backend.close()
             self.backend = None
 
+    def _ask(self, question, otherwise):
+        """An answer of the backend. One that fails is not asked again: this is asked many times a second."""
+        if not self.backend:
+            return otherwise
+        try:
+            return question()
+        except (OSError, ValueError, ctypes.ArgumentError):
+            self.backend, self.failed = None, True
+            return otherwise
+
     def names(self):
         """The connected controllers, or None when it cannot be told."""
-        if not self.backend:
-            return None
-        self.backend.scan()
-        return self.backend.names()
+        return self._ask(lambda: (self.backend.scan(), self.backend.names())[1], None)
 
     def held(self):
-        return self.backend.held() if self.backend else set()
+        return self._ask(lambda: self.backend.held(), set())

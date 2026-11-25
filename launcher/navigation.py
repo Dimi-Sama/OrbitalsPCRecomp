@@ -72,9 +72,9 @@ class Navigation:
     def press(self, button):
         app = self.app
         if button in KEYS:
-            if app.root.focus_get() in (None, app.root):
+            if dialogs.focused(app.root) in (None, app.root):
                 app.focus_main()
-            widget = app.root.focus_get() or app.stage
+            widget = dialogs.focused(app.root) or app.stage
             try:
                 widget.event_generate(KEYS[button])
             except tk.TclError:   # gone meanwhile

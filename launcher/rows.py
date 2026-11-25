@@ -7,6 +7,7 @@ value, Enter takes the next one. A value is saved as soon as it changes; the cal
 import tkinter as tk
 
 from . import look, paint
+from .dialogs import focused
 from .look import BG, BLUE, BLUE_D, CYAN, DISABLED, ENTRY, INK, LINE, MUTED, PANEL, PEACH, PINK_D, RAIL, RED, SELECTED, headline, label, px
 
 OFF = "#10143a"   # a row that cannot be used now
@@ -33,22 +34,28 @@ class Row(tk.Frame):
                              ("<Return>", lambda e: self.press()), ("<space>", lambda e: self.press())):
             self.bind(key, handler)
         self.bind("<FocusIn>", lambda e: self.rows.select(self))
-        self.bind("<FocusOut>", lambda e: self.after_idle(self.rows.show_focus))
+        self.bind("<FocusOut>", lambda e: self.rows.focus_left())
         for widget in (self, self.back, self.name):
             widget.bind("<Button-1>", lambda e: self.by_hand())
-        self.bind("<Enter>", lambda e: self.hovered())
+
+    def watch_mouse(self):
+        for widget in (self, *self.winfo_children()):
+            for event in ("<Enter>", "<Motion>"):
+                widget.bind(event, self.hovered, add="+")
 
     def by_hand(self):
-        self.from_mouse = self.focus_get() is not self
+        self.from_mouse = focused(self) is not self
         self.focus_set()
 
-    def hovered(self):
-        """The mouse selects a row like the keyboard does, unless the player is typing somewhere."""
-        try:
-            typing = isinstance(self.focus_get(), tk.Entry)
-        except KeyError:
+    def hovered(self, event):
+        """The mouse selects a row like the keyboard does, unless the player is typing somewhere; when it moves, not when the page
+        scrolls under it."""
+        place = event.x_root, event.y_root
+        if place == self.rows.pointer:
             return
-        if self.on and not typing and self.focus_displayof() is not None:
+        self.rows.pointer = place
+        focus = focused(self)
+        if self.on and focus is not None and focus is not self and not isinstance(focus, tk.Entry):
             self.by_hand()
 
     def step(self, direction):
@@ -149,7 +156,6 @@ class ChoiceRow(Row):
         changed = self.on and self.default is not None and value != self.default[0]
         self.dot.configure(text="•" if changed else "")
 
-
     def tint(self, lit):
         choices, value = self.choices(), self.get()
         at = choices.index(value)
@@ -215,13 +221,13 @@ class TextRow(Row):
         self.configure(takefocus=0)
         self.entry.bind("<Up>", lambda e: self.step(-1)); self.entry.bind("<Down>", lambda e: self.step(1))
         self.entry.bind("<Return>", lambda e: self.keep())
-        self.entry.bind("<FocusOut>", lambda e: (self.keep(), self.after_idle(self.rows.show_focus)))
+        self.entry.bind("<FocusOut>", lambda e: (self.keep(), self.rows.focus_left()))
         self.entry.bind("<FocusIn>", lambda e: self.rows.select(self))
 
     def by_hand(self):
         self.entry.focus_set()
 
-    def hovered(self):
+    def hovered(self, event):
         pass
 
     def tint(self, lit):
@@ -240,7 +246,7 @@ class TextRow(Row):
     def sync(self):
         super().sync()
         self.configure(takefocus=0)
-        if self.focus_get() is not self.entry and not self.error.cget("text"):
+        if focused(self) is not self.entry and not self.error.cget("text"):
             self.entry.configure(state="normal")
             self.entry.delete(0, "end"); self.entry.insert(0, self.get())
         self.entry.configure(state="normal" if self.on else "disabled")
@@ -251,6 +257,7 @@ class Rows:
 
     def __init__(self, app, side):
         self.app, self.page, self.items, self.selected = app, app.page, [], None
+        self.pointer = None   # where the mouse was last
         strip = tk.Frame(side, bg=BLUE, width=px(5))
         strip.pack(side="left", fill="y", pady=(px(4), px(8)))
         self.pane = tk.Frame(side, bg=BG)
@@ -285,6 +292,9 @@ class Rows:
     def ready(self):
         """All rows are there: show their state and select the first."""
         self.sync()
+        self.pointer = self.page.winfo_pointerxy()
+        for row in self.items:
+            row.watch_mouse()
         first = next((row for row in self.items if row.on), None)
         if first:
             first.focus_set()
@@ -311,11 +321,15 @@ class Rows:
         self.selected = row
         self.show()
 
+    def focus_left(self):
+        """Soon, when it is known where the focus went; by the window's clock, as the page may be gone by then."""
+        self.app.root.after_idle(self.show_focus)
+
     def show_focus(self):
         """Which row is selected, and whether the keys are on it."""
         try:
-            focus = self.page.focus_get()
-        except (KeyError, tk.TclError):   # (a native dialog's; the page is gone)
+            focus = focused(self.page)
+        except tk.TclError:   # the window is gone
             return
         for row in self.items:
             if row.winfo_exists():

@@ -19,7 +19,7 @@ from .demo import DemoScreen
 from .look import BG, CYAN, INK, MUTED, PANEL, PEACH, ScrollPage, label, px, scale_to, theme
 from .navigation import Navigation, wanted
 from .neo import Card, HeaderStrip, TitleScreen
-from .pads import Pads
+from .pads import Pads, own_copy
 from .page_files import FilesPage
 from .page_settings import REMOVED, ControlsPage, GeneralPage, GraphicsPage
 from .page_tools import SavesPage, ToolsPage
@@ -97,7 +97,8 @@ class Launcher:
         else:
             self.game = detect_installation()
         LOG.info("event=detect ready=%s", self.game is not None)
-        self.pads = Pads([*((self.game.root,) if self.game else ()), REPO / "bin"])
+        own = own_copy(self.game.root / "SDL3.dll", local / "tools" / "pads") if WINDOWS and self.game else None
+        self.pads = Pads(filter(None, (REPO / "bin", own)))
         self.pad_names = None
         self.pads_timer = root.after(50, self.watch_pads)
         self.navigation = Navigation(self)
@@ -152,8 +153,8 @@ class Launcher:
 
     def dismiss(self):
         self.notice = None
-        if self.active_page == "Home":
-            self.show("Home")
+        if self.active_page in ("Home", "Files"):
+            self.refresh()
 
     def post(self, function):
         """From any thread: run function on the Tk thread (Tk calls from another thread can fail while a window closes)."""
@@ -310,7 +311,7 @@ class Launcher:
         self.post(lambda: self.show_update(info, error, quiet))
 
     def show_update(self, info, error, quiet):
-        """The answer: on the title screen when there is a newer version, and on the General page that asked."""
+        """The answer: on the title screen when there is a newer version, and on the Tools page that asked."""
         if error or info is None:
             self.update_answer = error or "No update repository is set in this version of the launcher."
         elif not info["newer"]:
@@ -381,8 +382,11 @@ class Launcher:
         self.refresh()
 
     def callback_error(self, error_type, error, stack):
-        LOG.error("event=ui_error type=%s", error_type.__name__)
-        dialogs.error(self.root, "Something went wrong", str(error) or error_type.__name__)
+        LOG.error("event=ui_error type=%s", error_type.__name__, exc_info=(error_type, error, stack))
+        try:
+            dialogs.error(self.root, "Something went wrong", str(error) or error_type.__name__)
+        except tk.TclError:   # the window is gone
+            pass
 
     def action(self, callback):
         try:
@@ -417,7 +421,6 @@ class Launcher:
     def build_shell(self):
         self.root.rowconfigure(0, weight=1)
         self.root.columnconfigure(0, weight=1)
-        self.tabs = {}
         self.content = tk.Frame(self.root, bg=BG)
         self.content.grid(row=0, column=0, sticky="nsew")
         self.status_bar = tk.Frame(self.content, bg=BG)
@@ -462,7 +465,7 @@ class Launcher:
             dialogs.open_dialogs[-1].refocus()
 
     def build(self, name):
-        self.flush()
+        self.action(self.flush)
         for row in getattr(getattr(self.view, "rows", None), "items", ()):   # what is being typed is not lost
             if isinstance(row, TextRow):
                 row.keep()
@@ -610,9 +613,10 @@ class Launcher:
             return ("Not prepared. Without preparation, the first session translates each shader the first time it is "
                     "used and the picture pauses for it.")
         failed = f", {info['failed']} not supported by the translator" if info.get("failed") else ""
-        return (f"{info.get('validated', 0):,} prepared and validated of {info['discovered']:,}{failed} "
+        count = lambda n: f"{n:,}".replace(",", " ")
+        return (f"{count(info.get('validated', 0))} prepared and validated of {count(info['discovered'])}{failed} "
                 f"({info.get('at', '')[:10]}, {info.get('seconds', 0) / 60:.0f} min). Vulkan pipelines are still built by the "
-                "graphics driver the first time a scene uses them.").replace(",", " ")
+                "graphics driver the first time a scene uses them.")
 
     def prepare_shaders(self, confirm=True, then=None):
         self.guard()
@@ -628,8 +632,7 @@ class Launcher:
 
     def shaders_prepared(self, summary, then=None):
         failed = summary.get("failed", 0)
-        self.page_state.set(f"Shaders prepared: {summary.get('validated', 0):,} validated, {failed} not supported."
-                            .replace(",", " "))
+        self.page_state.set(f"Shaders prepared: {summary.get('validated', 0):,}".replace(",", " ") + f" validated, {failed} not supported.")
         self.refresh()
         if then and not self.closing:
             then()
@@ -676,14 +679,14 @@ class Launcher:
                 self.check_game()
                 self.page_state.set(str(value))
                 if self.closing:
-                    self.root.destroy()
+                    self.leave()
                     return
                 self.refresh()
             elif kind == "error":
                 self.page_state.set("The operation failed.")
                 LOG.error("event=background_failed type=%s", type(value).__name__)
                 if self.closing:
-                    self.root.destroy()
+                    self.leave()
                     return
                 self.copy_from(value)
                 if title:
@@ -699,7 +702,7 @@ class Launcher:
                 self.page_state.set("")
                 if self.closing:   # it ended before it could be stopped: what it made is kept
                     self.action(lambda: complete(value))
-                    self.root.destroy()
+                    self.leave()
                     return
                 self.refresh()   # also after a job without a demo: what it disabled is enabled again
                 self.action(lambda: complete(value))
@@ -780,6 +783,10 @@ class Launcher:
             self.page_state.set("Stopping…")
             self.refresh()
 
+    def leave(self):
+        self.action(self.flush)
+        self.root.destroy()
+
     def check_game(self):
         """After a stop: is the installation still whole? An update stopped while it was being written has to be started again."""
         if self.game:
@@ -825,5 +832,4 @@ class Launcher:
         if self.job or self.process:
             dialogs.message(self.root, "Not yet", "Close the game first, or wait for the operation to finish.")
             return
-        self.action(self.flush)
-        self.root.destroy()
+        self.leave()

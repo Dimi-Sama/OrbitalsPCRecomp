@@ -10,12 +10,31 @@ from .look import BG, BLUE_D, CYAN, ENTRY, INK, LINE, MUTED, RED, SHADOW, headli
 open_dialogs = []   # the innermost last
 
 
+def grab(window):
+    """Keep the mouse and the keys in a window: as soon as it can be seen (X11 refuses before)."""
+    try:
+        if window.winfo_exists():
+            window.grab_set()
+    except tk.TclError:
+        window.after(40, lambda: grab(window))
+
+
+def focused(widget):
+    """The widget that has the focus; None also when it is one of Tk's own, which has no object."""
+    try:
+        return widget.focus_get()
+    except KeyError:
+        return None
+
+
 def toward(widget, x, y, inside):
     """Give the focus to the nearest widget in a direction. Returns whether there was one."""
     def middle(w):
         return w.winfo_rootx() + w.winfo_width() / 2, w.winfo_rooty() + w.winfo_height() / 2
 
     def places(w):
+        if w.winfo_class() == "TCombobox":   # (its list is a window of Tk's own)
+            return
         for child in w.winfo_children():
             if child.winfo_class() == "Toplevel":
                 continue
@@ -82,15 +101,11 @@ class Dialog:
             self.entry.bind("<Return>", lambda e: self.take(0))
             self.entry.bind("<Down>", lambda e: self.go(self.entry, 0, 1))
         self.seal(self.cover)
-        before = None
-        try:
-            before = window.focus_get()
-        except KeyError:
-            pass
+        before = focused(window)
         grabbed = window.grab_current()
         open_dialogs.append(self)
         self.refocus()
-        self.cover.grab_set()
+        grab(self.cover)
         try:
             self.cover.wait_window()
         finally:
