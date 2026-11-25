@@ -1,0 +1,34 @@
+name: Build problem
+description: setup-windows.ps1, the Linux / Steam Deck build or a dependency download fails
+labels: [build]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Never attach or link game files, keys or a dump. Paste the console output of the failing step (remove your user name from paths).
+  - type: dropdown
+    id: step
+    attributes:
+      label: Failing step
+      options: ["1 Install.bat (Python, GCC)", "2 get_orbitals_deps.py (g++, SPIRV-Tools, glslang, .NET, SDL3)", "3 build_nvn.py / runtime",
+                "4 game code recompilation", "5 game folder", "Linux cross build (Zig, sysroot)", "Native Linux build", "Other"]
+    validations: {required: true}
+  - type: textarea
+    id: output
+    attributes: {label: Output, description: "The last 50 lines of the failing command.", render: text}
+    validations: {required: true}
+  - type: input
+    id: system
+    attributes: {label: System, placeholder: "Windows 11 23H2, 16 GB RAM, free disk space"}
+    validations: {required: true}
+  - type: input
+    id: commit
+    attributes: {label: Commit, description: "git rev-parse --short HEAD"}
+    validations: {required: true}
+  - type: checkboxes
+    id: data
+    attributes:
+      label: Game data
+      options:
+        - label: "-GameData holds exefs/ (main, main.npdm, sdk, ...) and romfs/ from my own copy, version 1.0.0"
+          required: true

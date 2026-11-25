@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Orbitals PC Recomp
+Comment=Launcher: install from your own game files, profiles, graphics settings, bug reports
+Exec=python3 -c "import os,sys,urllib.parse,urllib.request; p=sys.argv[1]; p=urllib.request.url2pathname(urllib.parse.urlsplit(p).path) if p.startswith('file:') else p; os.execlp('bash','bash',os.path.join(os.path.dirname(p),'Orbitals-Launcher.sh'))" %k
+Icon=applications-games
+Terminal=false
+Categories=Game;

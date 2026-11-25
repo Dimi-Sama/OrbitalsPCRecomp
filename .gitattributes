@@ -1,0 +1,19 @@
+runtime/edenvk/** linguist-vendored
+runtime/nvn/** linguist-vendored
+runtime/spvc/** linguist-vendored
+runtime/oh264/** linguist-vendored
+runtime/opus/** linguist-vendored
+runtime/vp9/** linguist-vendored
+runtime/bcn/** linguist-vendored
+tools/nxshader/xlate_bin/** linguist-vendored
+tool/audio_decode/** linguist-vendored
+tests/** linguist-documentation
+*.sh linguist-detectable=false
+*.bat linguist-detectable=false
+*.cpp linguist-detectable=false
+
+# shell scripts and Steam Deck input scripts run on Linux: LF even in a Windows checkout
+*.sh text eol=lf
+tools/steamdeck/*.script* text eol=lf
+tools/steamdeck/profiles/** text eol=lf
+*.desktop text eol=lf

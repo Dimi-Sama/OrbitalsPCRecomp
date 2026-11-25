@@ -1,0 +1,37 @@
+# Paths of the development branch left out of the public tree (tools/release/make_public_tree.py).
+# One fnmatch pattern per line, matched against the repository path (forward slashes). Keep the reason next to each group.
+
+# Network experiments: postponed, not part of v0.1 (kept on the orbitals-native-lan-development / orbitals-lan-direct-experimental branches).
+# The notes name machines of the local network and firewall rules of the development PC.
+NETPLAY_STEAMDECK.md
+
+# Housekeeping notes of the development machines (disk space, junctions), not useful to anyone else
+DISK_CLEANUP.md
+
+# Device-specific measurement helper with a developer's default host and key name
+tools/steamdeck/pull-run.sh
+
+# Development logs in French (investigation journals with the development machines' paths and worktrees); their findings are
+# summarised in English in docs/DEVELOPMENT_NOTES.md
+AUDIO_PERFORMANCE.md
+DEBUG_ORBITALS.md
+TIMING_RENDER_AUDIT.md
+PC_PORT_ROADMAP.md
+docs/ORBITALS_BINK.md
+docs/ORBITALS_DEV.md
+docs/UPSCALER_DLSS_PLAN.md
+
+# The first PC settings prototype (French), superseded by the launcher and tools/release/Play-Orbitals.ps1; its schema lists options
+# that v0.1 does not have (120 FPS, frame generation)
+tools/pc_settings/*
+
+# Internal handoff notes between development sessions (French, development machine paths)
+docs/V015_CLAUDE_HANDOFF.md
+
+# The private release history (release candidates and developer previews before the public v0.1.5): their test guides, the release
+# log with the private repository's state, and their release notes; docs/RELEASE_NOTES_v0.1.5.md and CHANGELOG.md sum them up
+RELEASE_CHECKLIST.md
+docs/TEST_RC*.md
+docs/TEST_V015_PREVIEW.md
+docs/RELEASE_NOTES_v0.1.0*.md
+docs/RELEASE_NOTES_v0.1.5-preview.*.md

@@ -1,0 +1,17 @@
+{
+  "path": "co-op path of tools/steamdeck/coop-path.script / .script2 (laptop timing, the save of the reference playable: 'Continue'); times are seconds since the first present (frames.csv)",
+  "scenes": [
+    {"name": "engine and studio logos", "from": 0, "to": 13},
+    {"name": "photosensitivity warning", "from": 13, "to": 20},
+    {"name": "title screen (fade, logo, press start)", "from": 20, "to": 39},
+    {"name": "intro sketch animation", "from": 39, "to": 49},
+    {"name": "main menu (illustration, logo, options)", "from": 49, "to": 58},
+    {"name": "local play: controller assignment", "from": 58, "to": 85},
+    {"name": "save select", "from": 85, "to": 95},
+    {"name": "character select (Maki, Omura)", "from": 95, "to": 135},
+    {"name": "loading", "from": 135, "to": 150},
+    {"name": "in-engine cutscene (cockpit)", "from": 150, "to": 160},
+    {"name": "high-five cutscene", "from": 160, "to": 166},
+    {"name": "co-op split screen gameplay with HUD", "from": 166, "to": 340}
+  ]
+}

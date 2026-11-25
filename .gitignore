@@ -1,0 +1,45 @@
+# build output
+bin/
+build/
+*.o
+*.a
+*.exe
+*.dll
+*.so
+*.bin
+SwitchRecomp.exe
+anygame.exe
+runtime/edenvk/build*/
+runtime/edenvk/lin/
+runtime/edenvk/win/
+runtime/snxvk/obj_*/
+
+# downloaded by Install.bat / Install.sh / tool/get_deps.py
+python/
+gcc/
+tcc/
+tool/deps/
+external/
+
+# Linux cross build inputs (tools/linux-cross/*.py download them)
+tools/linux-cross/zig*
+tools/linux-cross/sysroot/
+tools/linux-cross/cache/
+
+# games and their output
+games/
+captures/
+*_nvn/
+*.log
+*.ini
+
+# shipped profiles are not a game's own ini
+!tools/steamdeck/profiles/*/profile.ini
+
+# python
+__pycache__/
+*.pyc
+
+# the shader translator is shipped in the repository
+!tools/nxshader/xlate_bin/*.dll
+!tools/nxshader/xlate_bin/dmsh_xlate

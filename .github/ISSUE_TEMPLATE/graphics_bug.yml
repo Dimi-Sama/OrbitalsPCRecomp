@@ -1,0 +1,43 @@
+name: Graphics bug
+description: Something is drawn wrong, missing, black, flickering or corrupted
+labels: [graphics]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please do **not** attach game files, saves or shader caches. Screenshots of the problem are welcome.
+        Make a report archive with `python -B tools/release/bugreport.py --game-dir <your game folder>` and check it before attaching it.
+  - type: textarea
+    id: what
+    attributes: {label: What is wrong, description: "What you see, and what you expected (a console reference helps if you have one).", placeholder: "Example: the HUD of player 2 flickers when..."}
+    validations: {required: true}
+  - type: textarea
+    id: where
+    attributes: {label: Where and how to reproduce, description: "Scene / chapter, what you did just before, how often it happens."}
+    validations: {required: true}
+  - type: input
+    id: gpu
+    attributes: {label: GPU and driver, placeholder: "RTX 5070 Laptop, driver 591.xx / Steam Deck OLED RADV / Intel UHD 101.x"}
+    validations: {required: true}
+  - type: dropdown
+    id: os
+    attributes: {label: System, options: [Windows 11, Windows 10, Steam Deck (SteamOS), Other Linux]}
+    validations: {required: true}
+  - type: dropdown
+    id: mode
+    attributes: {label: Frame pacing, options: ["Reference 30 (ue_fps=0)", "Experimental 60 (ue_fps=60)", "Other"]}
+  - type: input
+    id: version
+    attributes: {label: Version, description: "Release or commit (git rev-parse --short HEAD), and the runtime line at the top of Orbitals.log."}
+    validations: {required: true}
+  - type: textarea
+    id: switches
+    attributes: {label: Renderer switches, description: "Any NXRT_* / SWR_* variable you set. Does NXRT_VK_QUAD_SHUFFLE=1 or NXRT_VK_TBUF_TYPED=2 change it?"}
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: The game was built from my own copy with tools/release/setup-windows.ps1 or BUILDING.md
+          required: true
+        - label: The problem is still there after the shaders of that scene were translated once (second visit / second session)

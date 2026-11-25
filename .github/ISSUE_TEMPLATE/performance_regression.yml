@@ -1,0 +1,25 @@
+name: Performance regression
+description: A newer build is slower than an older one on the same machine
+labels: [performance]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A regression report compares two builds on the **same** machine, scene and settings. The scripted co-op path and
+        `tools/claude_laptop/ab_stats.py` (Windows) or `tools/steamdeck/deck_report.py` (Steam Deck) give comparable numbers.
+  - type: input
+    id: builds
+    attributes: {label: Builds compared, placeholder: "v0.1.0 (abc1234) vs main (def5678)"}
+    validations: {required: true}
+  - type: textarea
+    id: numbers
+    attributes: {label: Measurements, description: "FPS, p95 / p99 frame time, translation thread CPU ms per frame, for each build, ≥ 2 runs each.", render: text}
+    validations: {required: true}
+  - type: textarea
+    id: scene
+    attributes: {label: Scene and settings, description: "Scene, ue_fps, resolution profile (--docked), window size, VSync, any NXRT_* / SWR_* variable."}
+    validations: {required: true}
+  - type: input
+    id: machine
+    attributes: {label: Machine, placeholder: "CPU, GPU, driver, RAM, power profile (laptop on AC? Deck TDP?)"}
+    validations: {required: true}

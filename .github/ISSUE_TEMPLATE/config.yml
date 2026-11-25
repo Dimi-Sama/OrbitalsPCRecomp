@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Upstream recompiler (SwitchRecomp by MZ Labs)
+    url: https://github.com/SwitchRECOMP-Dev/Switch2RECOMP/issues
+    about: Problems of the recompiler itself that are not specific to Orbitals

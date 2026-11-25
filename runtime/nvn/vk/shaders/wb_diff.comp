@@ -1,0 +1,26 @@
+#version 450
+// GPU write-backs compared on the GPU (vk_mem.c, NXRT_VK_WB_GPU): a dispatch's storage range before (base, kept in the write-back ring) and after the
+// shader (the pool itself). One work group per block of 64 words; a block with a changed word gets one record in out: its index, the 64-bit mask of the
+// words that differ, and the 64 words after. Only those records go back to the CPU, which writes the masked words into guest memory (wr_land's rule:
+// a word reaches guest memory iff after != base there).
+layout(local_size_x = 64) in;
+layout(std430, set = 0, binding = 0) readonly buffer Base { uint b[]; };
+layout(std430, set = 0, binding = 1) readonly buffer After { uint a[]; };
+layout(std430, set = 0, binding = 2) buffer Out { uint count; uint pad0; uint pad1; uint pad2; uint rec[]; };
+layout(push_constant) uniform PC { uint nwords; uint first_block; };
+shared uint m[2];
+shared uint slot;
+void main() {
+    uint blk = gl_WorkGroupID.x + first_block, i = gl_LocalInvocationID.x, w = blk * 64u + i;
+    if (i < 2u) m[i] = 0u;
+    barrier();
+    uint av = 0u;
+    if (w < nwords) { av = a[w]; if (av != b[w]) atomicOr(m[i >> 5], 1u << (i & 31u)); }
+    barrier();
+    if (m[0] == 0u && m[1] == 0u) return;   // the same for the whole group
+    if (i == 0u) slot = atomicAdd(count, 1u);
+    barrier();
+    uint at = slot * 68u;
+    if (i == 0u) { rec[at] = blk; rec[at + 1u] = m[0]; rec[at + 2u] = m[1]; rec[at + 3u] = 0u; }
+    rec[at + 4u + i] = av;
+}

@@ -1,0 +1,28 @@
+name: Crash or freeze
+description: The game closes, stops responding, or shows a runtime error
+labels: [crash]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Attach the archive of `python -B tools/release/bugreport.py --game-dir <your game folder>` (logs with local paths masked, no saves,
+        no game files). Check its contents first.
+  - type: textarea
+    id: what
+    attributes: {label: What happened, description: "When it crashed or froze, the last thing on screen, any message."}
+    validations: {required: true}
+  - type: textarea
+    id: steps
+    attributes: {label: Steps to reproduce, description: "From the start of a session. Does it happen every time?"}
+    validations: {required: true}
+  - type: textarea
+    id: log
+    attributes: {label: Last lines of Orbitals.log, description: "The last 30 lines, or the lines with [RED] / fatal / svcBreak.", render: text}
+  - type: input
+    id: system
+    attributes: {label: System, placeholder: "Windows 11 / SteamOS 3.8, CPU, GPU and driver, RAM"}
+    validations: {required: true}
+  - type: input
+    id: version
+    attributes: {label: Version, description: "Release or commit, and the runtime line at the top of Orbitals.log."}
+    validations: {required: true}
