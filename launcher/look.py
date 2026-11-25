@@ -18,7 +18,9 @@ CYAN = "#46e6ff"
 RED = "#ff4f8b"
 PEACH = "#ffc94a"
 DISABLED = "#7a80b8"   # a label of a control that cannot be used now
-SELECTED = "#263080"   # the selected row
+SELECTED = "#2a3480"   # the selected row, while the keys are elsewhere; a button
+BLUE, BLUE_D, PINK_D, SHADOW = "#2e5cff", "#1a2f8f", "#8f1f4d", "#0b1240"
+HEADING = STRONG = "TkDefaultFont"   # the families of the titles, and of the rows' names (theme)
 SCALE = 1.0            # pixels of this screen per pixel of the design (96 DPI)
 
 
@@ -49,34 +51,41 @@ def scale_to(root, dpi=None):
 
 
 def theme(root):
+    global HEADING, STRONG
+    from . import paint   # (it takes its scale from here)
+    paint.use(root)
     installed = set(font.families(root))
     body = next((name for name in ("Segoe UI", "Noto Sans", "DejaVu Sans") if name in installed),
                 font.nametofont("TkDefaultFont").actual("family"))
-    heading = next((name for name in ("Bahnschrift SemiCondensed", "Bahnschrift", "DejaVu Sans")
+    HEADING = next((name for name in ("Barlow Condensed", "Bahnschrift SemiCondensed", "Bahnschrift", "DejaVu Sans Condensed")
                     if name in installed), body)
+    STRONG = next((name for name in ("Segoe UI Semibold", "Noto Sans Medium") if name in installed), body)
     for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont"):
         font.nametofont(name).configure(family=body, size=10)
     style = ttk.Style(root)
     style.theme_use("clam")
     style.configure(".", background=BG, foreground=INK, bordercolor=LINE, font=(body, 10))
-    style.configure("TButton", background=PANEL, foreground=INK, borderwidth=1,
-                    lightcolor=PANEL, darkcolor=PANEL, focuscolor=CYAN, padding=(px(13), px(8)))
-    style.map("TButton", background=[("disabled", RAIL), ("pressed", LINE), ("focus", SELECTED), ("active", "#222a66")],
-              foreground=[("disabled", DISABLED)], bordercolor=[("focus", CYAN), ("active", "#5a6bd0")])
-    style.configure("Play.TButton", background=RED, foreground=BG, padding=(px(23), px(12)),
-                    lightcolor=RED, darkcolor=RED, bordercolor=RED, font=(heading, 13, "bold"))
-    style.map("Play.TButton", background=[("disabled", PANEL), ("pressed", "#e03a74"), ("focus", "#ff8fb5"), ("active", "#ff77a5")],
-              foreground=[("disabled", DISABLED)], bordercolor=[("focus", INK)])
+
+    # buttons: leaning bars, each state a picture whose middle is stretched
+    high, slant, wide = px(36), px(9), px(60)
+    for name, normal, over, words in (("TButton", SELECTED, "#3b49a8", INK), ("Play.TButton", RED, "#ff7fac", BG)):
+        bar = lambda colour: paint.leaning(wide, high, slant, colour)
+        element = "Liftoff." + name
+        style.element_create(element, "image", bar(normal), ("disabled", bar("#1e2558")), ("pressed", bar(CYAN)), ("focus", bar(INK)),
+                             ("active", bar(over)), border=(slant + px(4), 0), sticky="ew")
+        for kind, ground in ((name, BG), ("Card." + name, PANEL)):   # on the page, on a card
+            style.layout(kind, [(element, {"sticky": "ew", "children": [
+                ("Button.padding", {"sticky": "nsew", "children": [("Button.label", {"sticky": ""})]})]})])
+            style.configure(kind, background=ground, foreground=words, font=(HEADING, 13, "bold italic"), padding=(px(18), px(2)), anchor="center")
+            style.map(kind, foreground=[("disabled", DISABLED), ("pressed", BG), ("focus", BG)], background=[])
     style.configure("TEntry", fieldbackground=ENTRY, insertcolor=INK, padding=(px(8), px(5)))
-    style.configure("TCombobox", fieldbackground=ENTRY, arrowcolor=CYAN, arrowsize=px(12), padding=(px(7), px(5)))
-    style.configure("TSpinbox", fieldbackground=ENTRY, arrowcolor=CYAN, insertcolor=INK, padding=(px(7), px(5)))
-    style.map("TCombobox", fieldbackground=[("readonly", ENTRY)], selectbackground=[("readonly", ENTRY)],
+    style.configure("TCombobox", fieldbackground=ENTRY, background=PANEL, arrowcolor=CYAN, arrowsize=px(12), padding=(px(7), px(5)))
+    style.map("TCombobox", fieldbackground=[("readonly", ENTRY)], selectbackground=[("readonly", ENTRY)], background=[("active", SELECTED)],
               selectforeground=[("readonly", INK)], foreground=[("readonly", INK)])
-    for name, ground in (("TCheckbutton", BG), ("Panel.TCheckbutton", PANEL)):   # on the page, on a card
-        style.configure(name, background=ground, foreground=INK, indicatorbackground=ENTRY, indicatorsize=px(12))
-        style.map(name, indicatorbackground=[("selected", CYAN)],
-                  background=[("active", ground)], foreground=[("disabled", DISABLED)])
-    style.configure("TProgressbar", background=CYAN, troughcolor=ENTRY, thickness=px(16))
+    style.configure("TCheckbutton", background=BG, foreground=INK, indicatorbackground=ENTRY, indicatorsize=px(12))
+    style.map("TCheckbutton", indicatorbackground=[("selected", CYAN)], background=[("active", BG)], foreground=[("disabled", DISABLED)])
+    style.configure("TProgressbar", background=CYAN, troughcolor=ENTRY, thickness=px(12), borderwidth=0, bordercolor=ENTRY, lightcolor=CYAN,
+                    darkcolor=CYAN)
     style.layout("Vertical.TScrollbar", [("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
         ("Vertical.Scrollbar.thumb", {"expand": True, "sticky": "nswe"})]})])   # no arrows
     style.configure("Vertical.TScrollbar", background=LINE, troughcolor=RAIL, bordercolor=BG, lightcolor=LINE, darkcolor=LINE,
@@ -85,17 +94,27 @@ def theme(root):
     root.option_add("*TCombobox*Listbox.background", ENTRY)
     root.option_add("*TCombobox*Listbox.foreground", INK)
     root.option_add("*TCombobox*Listbox.selectBackground", LINE)
-    return body, heading
+    return body, HEADING
 
 
-def surface(parent, background=PANEL):
-    return tk.Frame(parent, bg=background, highlightthickness=1, highlightbackground=LINE)
+def card(parent, strip=BLUE):
+    """A flat card with a strip of colour at its left. Returns it and the frame for what it holds."""
+    frame = tk.Frame(parent, bg=PANEL)
+    tk.Frame(frame, bg=strip, width=px(6)).pack(side="left", fill="y")
+    body = tk.Frame(frame, bg=PANEL)
+    body.pack(side="left", fill="both", expand=True, padx=px(18), pady=px(13))
+    return frame, body
 
 
-def label(parent, text="", *, color=INK, size=10, bold=False, bg=BG, font_family=None, **options):
+def headline(parent, text="", size=17, **options):
+    """A title, in the menu's type."""
+    return label(parent, text, **{"size": size, "font_family": HEADING, "style": "bold italic", **options})
+
+
+def label(parent, text="", *, color=INK, size=10, bold=False, bg=None, font_family=None, style=None, **options):
     family = font_family or font.nametofont("TkDefaultFont").actual("family")
     # left-aligned unless the caller says otherwise (passing anchor or justify here twice raised a TypeError: the home page did not open)
-    return tk.Label(parent, text=text, fg=color, bg=bg, font=(family, size, "bold" if bold else "normal"),
+    return tk.Label(parent, text=text, fg=color, bg=bg or parent.cget("bg"), font=(family, size, style or ("bold" if bold else "normal")),
                     **{"anchor": "w", "justify": "left", **options})
 
 

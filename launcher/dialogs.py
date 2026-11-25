@@ -5,7 +5,7 @@ Mode, where a window of their own may not. Each returns when it is answered."""
 import tkinter as tk
 from tkinter import ttk
 
-from .look import BG, CYAN, ENTRY, INK, LINE, MUTED, PANEL, RED, label, px
+from .look import BG, BLUE_D, CYAN, ENTRY, INK, LINE, MUTED, RED, SHADOW, headline, label, px
 
 open_dialogs = []   # the innermost last
 
@@ -48,29 +48,31 @@ class Dialog:
     def __init__(self, parent, title, text, labels, alarm=False, value=None, check=None):
         window = parent.winfo_toplevel()
         self.answer, self.check, self.entry = None, check, None
-        self.cover = tk.Frame(window, bg=BG, takefocus=0)
+        self.cover = tk.Frame(window, bg=BLUE_D, takefocus=0)
         self.cover.place(x=0, y=0, relwidth=1, relheight=1)
-        card = tk.Frame(self.cover, bg=PANEL, highlightthickness=px(1), highlightbackground=RED if alarm else LINE)
+        shadow = tk.Frame(self.cover, bg=SHADOW)   # hard, like the title screen's card's
+        card = tk.Frame(self.cover, bg=BG)
         card.place(relx=0.5, rely=0.46, anchor="center")
-        tk.Frame(card, bg=RED if alarm else CYAN, width=px(5)).pack(side="left", fill="y")
-        body = tk.Frame(card, bg=PANEL)
-        body.pack(side="left", padx=px(22), pady=px(18))
-        label(body, title, bg=PANEL, size=15, bold=True, wraplength=px(520)).pack(anchor="w")
-        tk.Frame(body, bg=PANEL, width=px(420), height=px(6)).pack()
-        label(body, text, bg=PANEL, color=INK if value is None else MUTED, wraplength=px(520)).pack(anchor="w")
+        card.bind("<Configure>", lambda e: shadow.place(relx=0.5, rely=0.46, x=px(9), y=px(9), anchor="center", width=e.width, height=e.height))
+        tk.Frame(card, bg=RED if alarm else CYAN, width=px(7)).pack(side="left", fill="y")
+        body = tk.Frame(card, bg=BG)
+        body.pack(side="left", padx=px(24), pady=px(20))
+        headline(body, title, size=20, wraplength=px(520)).pack(anchor="w")
+        tk.Frame(body, bg=BG, width=px(420), height=px(6)).pack()
+        label(body, text, color=INK if value is None else MUTED, wraplength=px(520)).pack(anchor="w")
         if value is not None:
             self.entry = tk.Entry(body, bg=ENTRY, fg=INK, insertbackground=INK, relief="flat", highlightthickness=px(2),
                                   highlightbackground=LINE, highlightcolor=CYAN, font="TkTextFont")
             self.entry.insert(0, value)
             self.entry.select_range(0, "end")
             self.entry.pack(fill="x", pady=(px(8), 0), ipady=px(5))
-        self.error = label(body, "", bg=PANEL, color=RED, wraplength=px(520))
+        self.error = label(body, "", color=RED, wraplength=px(520))
         self.error.pack(anchor="w")
-        row = tk.Frame(body, bg=PANEL)
+        row = tk.Frame(body, bg=BG)
         row.pack(anchor="w", pady=(px(8), 0))
         self.buttons = []
         for number, text in enumerate(labels):
-            button = ttk.Button(row, text=text, command=lambda n=number: self.take(n), style="Play.TButton" if not number and not alarm else "TButton")
+            button = ttk.Button(row, text=text.upper(), command=lambda n=number: self.take(n), style="Play.TButton" if not number and not alarm else "TButton")
             button.pack(side="left", padx=(0, px(8)))
             button.bind("<Return>", lambda e, n=number: self.take(n))
             for key, x, y in (("<Left>", -1, 0), ("<Right>", 1, 0), ("<Up>", 0, -1), ("<Down>", 0, 1)):

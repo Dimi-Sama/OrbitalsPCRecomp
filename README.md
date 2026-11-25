@@ -45,7 +45,7 @@ All captured on an RTX 5070 Laptop at 1080p, except the character select (Steam 
 
 <table>
 <tr>
-<td width="50%"><img src="docs/images/launcher-title.png" alt="The launcher's title screen: PLAY, SETTINGS, PROFILES, GAME FILES, TOOLS, QUIT"></td>
+<td width="50%"><img src="docs/images/launcher-title.png" alt="The launcher's title screen: PLAY, SETTINGS, SAVES, GAME FILES, TOOLS, QUIT"></td>
 <td width="50%"><img src="docs/images/launcher-settings.png" alt="The launcher's settings, graphics tab"></td>
 </tr>
 <tr>

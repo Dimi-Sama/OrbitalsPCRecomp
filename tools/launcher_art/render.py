@@ -125,6 +125,54 @@ def icon(font, size):
     return out.resize((size, size), Image.LANCZOS)
 
 
+def title_card(font, w, h, scale=None, at=(0.5, 0.40), k=2, split=(0.74, 0.46)):
+    """The title screen as a picture: rays, screentone, the diagonal and, with a scale, the logotype."""
+    n, m = w * k, h * k
+    card = Image.new("RGBA", (n, m), BLUE)
+    draw = ImageDraw.Draw(card)
+    at_y = lambda y, shift=0.0: n * (split[0] + (split[1] - split[0]) * y / m) + shift * k
+    cx, cy, far = n * (at[0] if scale else 0.28), m * at[1], math.hypot(n, m)
+    for i in range(16):
+        a, b = (i + 0.12) / 16 * math.tau, (i + 0.50) / 16 * math.tau
+        draw.polygon([(cx, cy), (cx + math.cos(a) * far, cy + math.sin(a) * far), (cx + math.cos(b) * far, cy + math.sin(b) * far)], fill="#3a65ff")
+    u = min(w, h) / 430   # the size of what is drawn
+    pitch, reach, edge = 12 * u * k, 120 * u * k, 28 * u * k
+
+    def dots(size_at, colour, step):
+        row, y = 0, 0.0
+        while y < m + step:
+            x = step / 2 * (row % 2)
+            while x < n + step:
+                r = size_at(x, y) * step / 2
+                if r > 0.6:
+                    draw.ellipse([x - r, y - r, x + r, y + r], fill=colour)
+                x += step
+            y += step / 2
+            row += 1
+
+    dots(lambda x, y: 0 if at_y(y) - edge - x < -step_of(pitch) else max(0.0, 1 - (at_y(y) - edge - x) / reach) * 0.96, BLUE_D, pitch)
+    for start, end, colour in ((-edge, 0, BLUE_D), (0, 4 * u * k, INK), (4 * u * k, 14 * u * k, NIGHT), (14 * u * k, 17 * u * k, GOLD)):
+        draw.polygon([(at_y(0) + start, 0), (at_y(0) + end, 0), (at_y(m) + end, m), (at_y(m) + start, m)], fill=colour)
+    last = 17 * u * k
+    draw.polygon([(at_y(0) + last, 0), (n, 0), (n, m), (at_y(m) + last, m)], fill=PINK_D)
+    dots(lambda x, y: max(0.0, (x / n - 0.70) + (y / m - 0.66) * 1.5) * 0.8 if x > at_y(y) + last + pitch / 2 else 0, "#7b1841", pitch * 1.1)
+    for fx, fy, size in ((0.93, 0.12, 22), (0.86, 0.19, 9), (0.94, 0.86, 14), (0.10, 0.84, 18), (0.16, 0.90, 8)):
+        x, y, r = fx * n, fy * m, size * u * k
+        points = []
+        for q in range(4):
+            a0 = q * math.pi / 2 - math.pi / 2
+            points += [(x + math.cos(a0) * r, y + math.sin(a0) * r), (x + math.cos(a0 + math.pi / 4) * r * 0.24, y + math.sin(a0 + math.pi / 4) * r * 0.24)]
+        draw.polygon(points, fill="#fff6d8")
+    if scale:
+        word = logotype(font, scale * k, 3)
+        card.alpha_composite(word, (int(n * at[0] - word.width / 2), int(m * at[1] - word.height / 2)))
+    return card.resize((w, h), Image.LANCZOS).convert("RGB")
+
+
+def step_of(pitch):
+    return pitch * 0.6
+
+
 def ico(path, font):
     """A Windows icon: each size drawn for itself, all as PNG."""
     pictures = []
@@ -150,7 +198,13 @@ def main():
     icon(args.font, 256).save(args.out / "orbitals-icon.png", optimize=True)
     for name, scale in SCALES.items():
         logotype(args.font, scale).save(args.out / f"logotype-{name}.png", optimize=True)
-    for path in sorted(args.out.iterdir()):
+    steam = args.out / "steam"
+    steam.mkdir(exist_ok=True)
+    title_card(args.font, 600, 900, 1.06, (0.5, 0.36), split=(0.98, 0.34)).save(steam / "capsule.png", optimize=True)
+    title_card(args.font, 920, 430, 1.10, (0.39, 0.46), split=(0.86, 0.64)).save(steam / "wide.png", optimize=True)
+    title_card(args.font, 1920, 620, split=(0.64, 0.50)).save(steam / "hero.png", optimize=True)
+    logotype(args.font, 2.0).save(steam / "logo.png", optimize=True)
+    for path in sorted((*args.out.glob("*.*"), *steam.iterdir())):
         print(f"  {path.name}: {path.stat().st_size // 1024} KB")
 
 

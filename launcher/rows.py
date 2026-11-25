@@ -6,29 +6,36 @@ value, Enter takes the next one. A value is saved as soon as it changes; the cal
 
 import tkinter as tk
 
-from .look import BG, CYAN, DISABLED, ENTRY, INK, LINE, MUTED, PANEL, PEACH, RAIL, RED, SELECTED, label, px
+from . import look, paint
+from .look import BG, BLUE, BLUE_D, CYAN, DISABLED, ENTRY, INK, LINE, MUTED, PANEL, PEACH, PINK_D, RAIL, RED, SELECTED, headline, label, px
+
+OFF = "#10143a"   # a row that cannot be used now
 
 
 class Row(tk.Frame):
     """One row. `describe` is its text for the description pane (a string or a function); `enabled` a function."""
 
     def __init__(self, rows, caption, describe, *, indent=False, enabled=None):
-        super().__init__(rows.page, bg=PANEL, highlightthickness=px(2), highlightbackground=BG, highlightcolor=CYAN, takefocus=1)
+        super().__init__(rows.page, bg=BG, takefocus=1, highlightthickness=0)
         self.rows, self.caption, self.describe = rows, caption, describe
         self.is_enabled = enabled or (lambda: True)
-        self.on = True
-        self.pack(fill="x", padx=(px(26) if indent else 0, 0), pady=(0, px(2)))
-        self.name = label(self, caption, bg=PANEL)
-        self.name.pack(side="left", padx=(px(12), 0), pady=px(9))
-        self.dot = label(self, "", bg=PANEL, color=RED)   # "•": not the default value
+        self.on, self.chosen, self.keyed, self.dressed = True, False, False, None
+        self.pack(fill="x", padx=(px(26) if indent else 0, 0), pady=(0, px(4)))
+        self.back = tk.Label(self, bd=0, bg=BG, anchor="nw", padx=0, pady=0)   # its leaning bar, under everything
+        self.back.place(x=0, y=0, relwidth=1, relheight=1)
+        self.name = label(self, caption, font_family=look.STRONG)
+        self.name.pack(side="left", padx=(px(30), 0), pady=px(9))
+        self.dot = label(self, "", color=PEACH, bold=True)   # "•": not the default value
         self.dot.pack(side="left", padx=px(6))
+        self.bind("<Configure>", lambda e: self.dress(True))
         for key, handler in (("<Up>", lambda e: self.step(-1)), ("<Down>", lambda e: self.step(1)),
                              ("<Left>", lambda e: self.move(-1)), ("<Right>", lambda e: self.move(1)),
                              ("<Return>", lambda e: self.press()), ("<space>", lambda e: self.press())):
             self.bind(key, handler)
         self.bind("<FocusIn>", lambda e: self.rows.select(self))
-        self.bind("<Button-1>", lambda e: self.by_hand())
-        self.name.bind("<Button-1>", lambda e: self.by_hand())
+        self.bind("<FocusOut>", lambda e: self.after_idle(self.rows.show_focus))
+        for widget in (self, self.back, self.name):
+            widget.bind("<Button-1>", lambda e: self.by_hand())
         self.bind("<Enter>", lambda e: self.hovered())
 
     def by_hand(self):
@@ -54,16 +61,32 @@ class Row(tk.Frame):
     def press(self):
         return "break"
 
-    def paint(self, ground):
-        for widget in (self, *self.winfo_children()):
-            if not isinstance(widget, (tk.Entry, tk.Button)):
+    def dress(self, again=False):
+        """Its bar and its colours: the selected row is the title screen's white bar, while the keys are on it."""
+        w, h = self.winfo_width(), self.winfo_height()
+        state = (w, h, self.on, self.chosen, self.keyed)
+        if h < 8 or (state == self.dressed and not again):
+            return
+        self.dressed = state
+        lit = self.chosen and self.keyed and self.on
+        ground = INK if lit else SELECTED if self.chosen and self.on else PANEL if self.on else OFF
+        self.back.configure(image=paint.leaning(w, h, px(9), ground, px(7) if lit else 0, RED))
+        words = PINK_D if lit else INK if self.on else DISABLED
+        for widget in self.winfo_children():
+            if widget is not self.back and not isinstance(widget, (tk.Entry, tk.Menu)):
                 widget.configure(bg=ground)
+        self.name.configure(fg=words)
+        self.dot.configure(fg=RED if lit else PEACH)
+        self.tint(lit)
+
+    def tint(self, lit):
+        """The colours of what stands at its right."""
 
     def sync(self):
         """Show the state as it is now."""
         self.on = bool(self.is_enabled())
-        self.name.configure(fg=INK if self.on else DISABLED)
         self.configure(takefocus=1 if self.on else 0)
+        self.dress()
 
 
 class ChoiceRow(Row):
@@ -72,12 +95,12 @@ class ChoiceRow(Row):
     def __init__(self, rows, caption, values, get, set_, describe, *, show=str, default=None, other=None, **options):
         super().__init__(rows, caption, describe, **options)
         self.values, self.get, self.set, self.show, self.default, self.other = values, get, set_, show, default, other
-        self.later = label(self, "▶", bg=PANEL, color=CYAN, cursor="hand2")
-        self.later.pack(side="right", padx=(px(2), px(10)), fill="y")
-        self.value = label(self, "", bg=PANEL, anchor="center", cursor="hand2", justify="center")
-        self.value.pack(side="right", fill="y")
-        self.earlier = label(self, "◀", bg=PANEL, color=CYAN, cursor="hand2")
-        self.earlier.pack(side="right", padx=px(2), fill="y")
+        self.later = label(self, cursor="hand2", width=px(24), image=paint.shape("next", px(14), CYAN), anchor="center")
+        self.later.pack(side="right", padx=(0, px(16)))
+        self.value = label(self, "", anchor="center", cursor="hand2", justify="center", bold=True)
+        self.value.pack(side="right")
+        self.earlier = label(self, cursor="hand2", width=px(24), image=paint.shape("before", px(14), CYAN), anchor="center")
+        self.earlier.pack(side="right")
         self.earlier.bind("<Button-1>", lambda e: (self.by_hand(), self.move(-1)))
         self.later.bind("<Button-1>", lambda e: (self.by_hand(), self.move(1)))
         self.value.bind("<Button-1>", lambda e: (self.by_hand(), self.listed()))
@@ -121,12 +144,19 @@ class ChoiceRow(Row):
         super().sync()
         choices, value = self.choices(), self.get()
         # (wide enough for the widest value, so the arrows stay under the pointer)
-        self.value.configure(text=self.show(value), fg=INK if self.on else DISABLED,
-                             width=min(30, max(len(self.show(choice)) for choice in choices) + 1))
-        self.earlier.configure(fg=CYAN if self.on and choices.index(value) > 0 else LINE)
-        self.later.configure(fg=CYAN if self.on and choices.index(value) < len(choices) - 1 else LINE)
+        self.value.configure(text=self.show(value), width=min(30, max(len(self.show(choice)) for choice in choices) + 1))
+        self.tint(self.chosen and self.keyed and self.on)
         changed = self.on and self.default is not None and value != self.default[0]
         self.dot.configure(text="•" if changed else "")
+
+
+    def tint(self, lit):
+        choices, value = self.choices(), self.get()
+        at = choices.index(value)
+        self.value.configure(fg=BLUE_D if lit else INK if self.on else DISABLED)
+        for arrow, kind, can in ((self.earlier, "before", at > 0), (self.later, "next", at < len(choices) - 1)):
+            colour = (RED if lit else CYAN) if self.on and can else ("#d9d3ea" if lit else LINE if self.on else "#1c2352")
+            arrow.configure(image=paint.shape(kind, px(14), colour))
 
 
 def switch(rows, caption, get, set_, describe, *, default=None, **options):
@@ -140,10 +170,11 @@ class ActionRow(Row):
     def __init__(self, rows, caption, text, run, describe, **options):
         super().__init__(rows, caption, describe, **options)
         self.text, self.run = text, run
-        self.button = label(self, "", bg=PANEL, color=CYAN, cursor="hand2", anchor="e", justify="right")
-        self.button.pack(side="right", padx=(px(8), px(12)), fill="y")
-        self.configure(cursor="hand2"); self.name.configure(cursor="hand2")
-        for widget in (self, self.name, self.button):
+        self.button = headline(self, "", size=13, color=CYAN, cursor="hand2", anchor="e", justify="right")
+        self.button.pack(side="right", padx=(px(8), px(22)))
+        for widget in (self, self.back, self.name):
+            widget.configure(cursor="hand2")
+        for widget in (self, self.back, self.name, self.button):
             widget.bind("<ButtonRelease-1>", self.released)
 
     def released(self, event):
@@ -160,7 +191,11 @@ class ActionRow(Row):
 
     def sync(self):
         super().sync()
-        self.button.configure(text=self.text() if callable(self.text) else self.text, fg=CYAN if self.on else DISABLED)
+        self.button.configure(text=(self.text() if callable(self.text) else self.text).upper())
+        self.tint(self.chosen and self.keyed and self.on)
+
+    def tint(self, lit):
+        self.button.configure(fg=RED if lit else CYAN if self.on else DISABLED)
 
 
 class TextRow(Row):
@@ -174,13 +209,13 @@ class TextRow(Row):
         self.entry = tk.Entry(self, bg=ENTRY, fg=INK, insertbackground=INK, relief="flat", highlightthickness=px(2),
                               highlightbackground=LINE, highlightcolor=CYAN, disabledbackground=RAIL, disabledforeground=DISABLED,
                               font="TkTextFont")
-        self.entry.pack(fill="x", padx=px(12), pady=(0, px(4)), ipady=px(4))
-        self.error = label(self, "", bg=PANEL, color=PEACH, size=9)
-        self.error.pack(fill="x", padx=px(12), pady=(0, px(6)))
+        self.entry.pack(fill="x", padx=(px(30), px(20)), pady=(0, px(4)), ipady=px(4))
+        self.error = label(self, "", color=PEACH, size=9)
+        self.error.pack(anchor="w", padx=(px(30), px(20)), pady=(0, px(6)))
         self.configure(takefocus=0)
         self.entry.bind("<Up>", lambda e: self.step(-1)); self.entry.bind("<Down>", lambda e: self.step(1))
         self.entry.bind("<Return>", lambda e: self.keep())
-        self.entry.bind("<FocusOut>", lambda e: self.keep())
+        self.entry.bind("<FocusOut>", lambda e: (self.keep(), self.after_idle(self.rows.show_focus)))
         self.entry.bind("<FocusIn>", lambda e: self.rows.select(self))
 
     def by_hand(self):
@@ -188,6 +223,9 @@ class TextRow(Row):
 
     def hovered(self):
         pass
+
+    def tint(self, lit):
+        self.error.configure(fg=PINK_D if lit else PEACH)
 
     def keep(self):
         if not self.on or self.entry.get().strip() == self.get():
@@ -213,10 +251,12 @@ class Rows:
 
     def __init__(self, app, side):
         self.app, self.page, self.items, self.selected = app, app.page, [], None
+        strip = tk.Frame(side, bg=BLUE, width=px(5))
+        strip.pack(side="left", fill="y", pady=(px(4), px(8)))
         self.pane = tk.Frame(side, bg=BG)
-        self.pane.pack(fill="both", expand=True, pady=(px(4), 0))
-        width = px(280)
-        self.title = label(self.pane, "", size=13, bold=True, font_family=app.heading_font, wraplength=width)
+        self.pane.pack(side="left", fill="both", expand=True, padx=(px(16), 0), pady=(px(2), 0))
+        width = px(262)
+        self.title = headline(self.pane, "", size=19, wraplength=width)
         self.title.pack(fill="x")
         self.text = label(self.pane, "", color=MUTED, wraplength=width)
         self.text.pack(fill="x", pady=(px(6), 0))
@@ -224,7 +264,7 @@ class Rows:
         self.note.pack(fill="x", pady=(px(10), 0))
 
     def group(self, title):
-        label(self.page, title, color=CYAN, bold=True).pack(anchor="w", pady=(px(10) if self.items else 0, px(5)))
+        headline(self.page, title.upper(), size=14, color=CYAN).pack(anchor="w", pady=(px(8) if self.items else 0, px(3)))
 
     def add(self, row):
         self.items.append(row)
@@ -271,9 +311,19 @@ class Rows:
         self.selected = row
         self.show()
 
-    def show(self):
+    def show_focus(self):
+        """Which row is selected, and whether the keys are on it."""
+        try:
+            focus = self.page.focus_get()
+        except (KeyError, tk.TclError):   # (a native dialog's; the page is gone)
+            return
         for row in self.items:
-            row.paint(SELECTED if row is self.selected else PANEL)
+            if row.winfo_exists():
+                row.chosen, row.keyed = row is self.selected, focus is row or focus is getattr(row, "entry", self)
+                row.dress()
+
+    def show(self):
+        self.show_focus()
         if self.selected:
             text = self.selected.describe
             text = text() if callable(text) else text

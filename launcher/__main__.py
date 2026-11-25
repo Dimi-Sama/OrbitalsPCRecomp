@@ -5,7 +5,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox
 
-from . import fonts
+from . import desktop, fonts
 from .core import LauncherError, data_home, instance_lock, setup_logging
 from .look import sharp_windows
 from .ui import Launcher
@@ -18,7 +18,8 @@ def main():
     args = parser.parse_args()
     sharp_windows()
     fonts.load()
-    root = tk.Tk()
+    desktop.identity()
+    root = tk.Tk(className="OrbitalsPCRecomp")
     root.withdraw()
     try:
         local = args.data_dir.resolve()

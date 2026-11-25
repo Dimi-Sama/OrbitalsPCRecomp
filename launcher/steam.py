@@ -9,8 +9,8 @@ The format, from Steam's files themselves: a map is 0x00 <name> NUL <entries> 0x
 integer 0x02 <name> NUL <4 bytes LE>, a 64-bit one 0x07 <name> NUL <8 bytes LE>. The appid Steam derives for a shortcut is
 crc32(exe + name) with the top bit set.
 
-Steam's library shows a non-Steam game by its images in config/grid/: <appid>p.png, <appid>.png and <appid>_hero.png, here cut from
-the launcher's own illustration (no art of the game). An image the player set stays: only one this launcher wrote, by its SHA-256 in
+Steam's library shows a non-Steam game by its images in config/grid/: <appid>p.png, <appid>.png, <appid>_hero.png and <appid>_logo.png,
+here the launcher's own title card (no art of the game). An image the player set stays: only one this launcher wrote, by its SHA-256 in
 <appid>_orbitals-recomp.txt, is replaced."""
 
 import hashlib
@@ -18,7 +18,6 @@ import os
 import shutil
 import struct
 import sys
-import tkinter as tk
 import zlib
 from pathlib import Path
 
@@ -108,21 +107,10 @@ def app_id(exe, name=NAME):
     return zlib.crc32((f'"{exe}"' + name).encode("utf-8", "surrogateescape")) | 0x80000000
 
 
-def draw_images(master, folder):
-    """Steam's library images, cut from the launcher's illustration (Tk thread). Returns {suffix after the appid: file}."""
-    art = tk.PhotoImage(master=master, file=str(Path(__file__).with_name("assets") / "orbital-halo.png"))
-    folder.mkdir(parents=True, exist_ok=True)
-    images = {}
-    for suffix, (w, h), zoom, less, (x, y) in (("p.png", (600, 900), 2, 1, (1500, 10)), (".png", (920, 430), 1, 1, (360, 20)),
-                                               ("_hero.png", (1920, 620), 3, 2, (0, 35))):
-        scaled = art.zoom(zoom) if zoom > 1 else art
-        if less > 1:
-            scaled = scaled.subsample(less)
-        image = tk.PhotoImage(master=master, width=w, height=h)
-        image.tk.call(image, "copy", scaled, "-from", x, y, x + w, y + h, "-to", 0, 0)
-        images[suffix] = folder / ("steam" + suffix)
-        image.write(str(images[suffix]), format="png")
-    return images
+def images():
+    """Steam's library images (tools/launcher_art): {suffix after the appid: file}."""
+    folder = Path(__file__).with_name("assets") / "steam"
+    return {"p.png": folder / "capsule.png", ".png": folder / "wide.png", "_hero.png": folder / "hero.png", "_logo.png": folder / "logo.png"}
 
 
 def write_new(path, data):

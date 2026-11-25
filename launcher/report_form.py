@@ -6,7 +6,7 @@ from tkinter import ttk
 
 from . import dialogs
 from .core import LauncherError, latest_run
-from .look import BG, CYAN, ENTRY, INK, LINE, MUTED, PEACH, label, px, text_box
+from .look import BG, CYAN, ENTRY, INK, LINE, MUTED, PEACH, headline, label, px, text_box
 from .reports import ISSUE_TYPES, create_report, report_saves
 
 
@@ -44,7 +44,7 @@ class ReportForm:
         self.window.bind("<Escape>", lambda e: self.close())
         body = tk.Frame(self.window, bg=BG)
         body.pack(fill="both", expand=True, padx=px(16), pady=px(13))
-        label(body, "Report a problem", size=20, bold=True).pack(anchor="w")
+        headline(body, "Report a problem", size=24).pack(anchor="w")
         label(body, "Check the contents before posting a report on GitHub.", color=MUTED).pack(
             anchor="w", pady=(0, px(8)))
         title_row = tk.Frame(body, bg=BG)
@@ -79,7 +79,7 @@ class ReportForm:
         for index, (key, title, enabled) in enumerate(
             (("game_logs", "Game logs" if game_logs else "Game logs · unavailable", game_logs),
              ("launcher_logs", "Launcher logs", True), ("hardware", "Hardware", True),
-             ("version", "Versions", True), ("settings", "Profile settings", True))):
+             ("version", "Versions", True), ("settings", "Settings", True))):
             self.options[key] = tk.BooleanVar(value=enabled)
             check = ttk.Checkbutton(checkboxes, text=title, variable=self.options[key])
             check.grid(row=index // 3, column=index % 3, sticky="w", padx=(0, px(9)))
@@ -176,7 +176,7 @@ class ReportForm:
         view.grab_set()
         view.columnconfigure(1, weight=1)
         view.rowconfigure(1, weight=1)
-        label(view, "Report contents", bold=True, size=13).grid(row=0, column=0, columnspan=2, sticky="w")
+        headline(view, "Report contents", size=18).grid(row=0, column=0, columnspan=2, sticky="w")
         names = list(report.files)
         listing = tk.Listbox(view, width=31, bg=ENTRY, fg=INK, selectbackground=LINE,
                              relief="flat", exportselection=False)

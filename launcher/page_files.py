@@ -6,7 +6,8 @@ import tkinter as tk
 from tkinter import filedialog, ttk
 
 from .core import REPO, WINDOWS, game_release, game_source, outdated_release, setup_log, shader_preparation, source_lacks
-from .look import BG, CYAN, INK, LINE, MUTED, PANEL, PEACH, RED, label, px, surface
+from . import paint
+from .look import BG, BLUE, CYAN, INK, MUTED, PANEL, PEACH, RED, card, headline, label, px
 
 DISK_GIB = 5
 TEXT_WIDTH = 690
@@ -35,14 +36,11 @@ class FilesPage:
             self.first.focus_set()
 
     # ---- pieces
-    def card(self, title=None, line=LINE):
-        card = surface(self.page)
-        card.configure(highlightbackground=line)
-        card.pack(fill="x", pady=(0, px(12)))
-        body = tk.Frame(card, bg=PANEL)
-        body.pack(fill="x", padx=px(16), pady=px(13))
+    def card(self, title=None, strip=BLUE):
+        frame, body = card(self.page, strip)
+        frame.pack(fill="x", pady=(0, px(12)))
         if title:
-            label(body, title, bg=PANEL, size=13, bold=True, font_family=self.app.heading_font).pack(anchor="w", pady=(0, px(4)))
+            headline(body, title, size=18).pack(anchor="w", pady=(0, px(4)))
         return body
 
     def text(self, parent, words, color=MUTED, **pack):
@@ -64,21 +62,21 @@ class FilesPage:
 
     # ---- states
     def notice(self, card):
-        body = self.card(card.title, line=RED)
+        body = self.card(card.title, strip=RED)
         self.text(body, card.text, color=INK)
-        self.buttons(body, *((title, run, False, True) for title, run in card.buttons), first=True)
+        self.buttons(body, *((title, run, not number, True) for number, (title, run) in enumerate(card.buttons)), first=True)
 
     def working(self):
         app = self.app
-        body = self.card(app.spoken(app.demo_title))
+        body = self.card(app.spoken(app.demo_title), strip=CYAN)
         self.bar = ttk.Progressbar(body, mode="determinate", maximum=100)
         self.bar.pack(fill="x", pady=(px(6), px(8)))
         self.timing = self.text(body, "")
         if app.install_step is not None:
             self.steps = []
             for name in SETUP_NAMES:
-                line = label(body, name, bg=PANEL)
-                line.pack(anchor="w", pady=(px(4), 0))
+                line = label(body, name, compound="left", padx=0)
+                line.pack(anchor="w", pady=(px(5), 0))
                 self.steps.append((name, line))
         self.said = self.text(body, "", pady=(px(8), 0))
         self.buttons(body, ("Stop", app.stop_job, False, app.stoppable and not app.task.stopped), first=True)
@@ -95,7 +93,8 @@ class FilesPage:
         self.said.configure(text=said)
         for number, (name, line) in enumerate(self.steps or (), 1):
             done, now = number < app.install_step, number == app.install_step
-            line.configure(text=("✓   " if done else "▶   " if now else "○   ") + name, fg=CYAN if done else INK if now else MUTED)
+            line.configure(text="   " + name, fg=CYAN if done else INK if now else MUTED,
+                           image=paint.shape("dot", px(12), CYAN) if done else paint.shape("next", px(12), RED) if now else paint.shape("ring", px(12), "#5a64a8"))
 
     def setup(self):
         """The three steps of a first installation, or of another one."""
@@ -128,14 +127,14 @@ class FilesPage:
                      *((("Use an installation made before", app.locate, False, not busy),) if not app.game else ()), first=lacks == [])
 
     def step(self, number, title, done):
-        card = surface(self.page)
-        card.pack(fill="x", pady=(0, px(10)))
-        mark = label(card, "✓" if done else str(number), bg=CYAN if done else BG, color=BG if done else CYAN, bold=True, size=12, width=3,
-                     anchor="center")
-        mark.pack(side="left", anchor="n", padx=(px(16), px(6)), pady=px(13), ipady=px(3))
-        body = tk.Frame(card, bg=PANEL)
-        body.pack(side="left", fill="x", expand=True, padx=px(8), pady=px(13))
-        label(body, title, bg=PANEL, size=13, bold=True, font_family=self.app.heading_font).pack(anchor="w")
+        frame, inside = card(self.page, CYAN if done else PEACH)
+        frame.pack(fill="x", pady=(0, px(10)))
+        mark = headline(inside, "OK" if done else str(number), size=15, color=BG, compound="center", anchor="center",
+                        image=paint.leaning(px(46), px(30), px(8), CYAN if done else PEACH))
+        mark.pack(side="left", anchor="n", padx=(0, px(16)))
+        body = tk.Frame(inside, bg=PANEL)
+        body.pack(side="left", fill="x", expand=True)
+        headline(body, title, size=18).pack(anchor="w")
         return body
 
     def choose(self):
@@ -179,7 +178,7 @@ class FilesPage:
         app = self.app
         row = tk.Frame(self.page, bg=BG)
         row.pack(fill="x", pady=(0, px(10)))
-        self.buttons(row, (("▾  " if app.setup_open else "▸  ") + "Set up again from a copy", self.fold, False, True),
+        self.buttons(row, ("Hide the set up" if app.setup_open else "Set up again from a copy", self.fold, False, True),
                      *((("Open setup log", lambda: app.open_file(setup_log()), False, True),) if setup_log().is_file() else ()))
         if app.setup_open:
             self.setup()

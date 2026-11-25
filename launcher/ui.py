@@ -10,19 +10,19 @@ import webbrowser
 from pathlib import Path
 from tkinter import filedialog, ttk
 
-from . import VERSION, dialogs, paint
+from . import VERSION, desktop, dialogs
 from .core import (DEFAULT_SETTINGS, LOG, REPO, WINDOWS, LauncherError, Profiles, carry_saves, check_update, detect_installation,
                    download_update, finish_session, game_source, install_fraction, install_from_files, installation, json_bytes,
                    latest_run, launch, launch_kit, outdated_release, prepare_shaders, runtime_info, setup_log, shader_preparation,
                    source_lacks, validate_settings)
 from .demo import DemoScreen
-from .look import BG, CYAN, MUTED, PEACH, ScrollPage, label, px, scale_to, theme
+from .look import BG, CYAN, INK, MUTED, PANEL, PEACH, ScrollPage, label, px, scale_to, theme
 from .navigation import Navigation, wanted
 from .neo import Card, HeaderStrip, TitleScreen
 from .pads import Pads
 from .page_files import FilesPage
 from .page_settings import REMOVED, ControlsPage, GeneralPage, GraphicsPage
-from .page_tools import ProfilesPage, ToolsPage
+from .page_tools import SavesPage, ToolsPage
 from .report_form import ReportForm, show_text
 from .reports import gpu_info, system_info
 from .rows import TextRow
@@ -72,14 +72,11 @@ class Launcher:
         self.pending = {}            # settings changed and not written yet (keep, flush)
         self.flush_timer = self.game_timer = None
         scale_to(root)
-        paint.use(root)
         self.font, self.heading_font = theme(root)
         assets = Path(__file__).with_name("assets")
         self.icon = tk.PhotoImage(file=str(assets / "orbitals-icon.png"))
-        if WINDOWS:
-            root.iconbitmap(default=str(assets / "orbitals.ico"))
-        else:
-            root.iconphoto(True, self.icon)
+        root.iconphoto(True, self.icon)
+        desktop.dress(root, BG, INK)
         root.title("Liftoff · Orbitals PC Recomp")
         root.configure(bg=BG)
         root.minsize(px(880), px(650))
@@ -223,7 +220,7 @@ class Launcher:
 
     def settings_note(self):
         text = ("The game is running: its own PC settings apply, and are kept when it closes." if self.process else
-                f"For {self.profiles.profile['name']}. Changes are saved as you make them and apply when you press PLAY.")
+                "Changes are saved as you make them and apply when you press PLAY.")
         label(self.note_bar, text, color=PEACH if self.process else MUTED).pack(anchor="w")
 
     @staticmethod
@@ -410,7 +407,8 @@ class Launcher:
         self.flush()
 
     def button(self, parent, title, callback, *, style="TButton"):
-        button = ttk.Button(parent, text=title, style=style, command=lambda: self.action(callback))
+        ground = "Card." if parent.cget("bg") == PANEL else ""
+        button = ttk.Button(parent, text=title.upper(), style=ground + style, command=lambda: self.action(callback))
         button.bind("<Return>", lambda _: button.invoke())
         for key, x, y in (("<Left>", -1, 0), ("<Right>", 1, 0), ("<Up>", 0, -1), ("<Down>", 0, 1)):
             button.bind(key, lambda e, x=x, y=y: dialogs.toward(button, x, y, button.winfo_toplevel()) and "break")
@@ -442,8 +440,8 @@ class Launcher:
 
     TABS = (("Graphics", "GRAPHICS"), ("Controls", "CONTROLS"), ("Settings", "GENERAL"))
     SETTINGS_PAGES = {"Graphics": GraphicsPage, "Controls": ControlsPage, "Settings": GeneralPage}
-    ROWS_PAGES = SETTINGS_PAGES | {"Profiles": ProfilesPage, "Tools": ToolsPage}
-    SUBSCREENS = {"Profiles": "PROFILES", "Files": "GAME FILES", "Tools": "TOOLS"}
+    ROWS_PAGES = SETTINGS_PAGES | {"Saves": SavesPage, "Tools": ToolsPage}
+    SUBSCREENS = {"Saves": "SAVES", "Files": "GAME FILES", "Tools": "TOOLS"}
 
     def next_tab(self, direction):
         if dialogs.open_dialogs:
@@ -538,10 +536,10 @@ class Launcher:
         busy = bool(self.process or self.job)
         go = lambda page: (lambda: self.show(page))
         files = go("Files")
-        settings, tools = ("SETTINGS", "Graphics, controls, general", go("Graphics"), True), ("TOOLS", "Steam, updates, reports, logs", go("Tools"), True)
+        settings, tools = ("SETTINGS", "Graphics, controls, general", go("Graphics"), True), ("TOOLS", "Shortcuts, updates, reports, logs", go("Tools"), True)
         if self.game:
             menu = [("PLAY", "The game is running" if self.process else "Start the game · two players: plug in a second controller",
-                     lambda: self.action(self.play), not busy), settings, ("SAVES", "Back up, import, export", go("Profiles"), True),
+                     lambda: self.action(self.play), not busy), settings, ("SAVES", "Back up, import, export", go("Saves"), True),
                     ("GAME FILES", "What is installed, shaders", files, True), tools]
         else:
             menu = [("SET UP ORBITALS", "From your own copy: about 20 to 60 minutes, once", files, True), settings, tools]
@@ -609,10 +607,10 @@ class Launcher:
     def shader_state_text(self):
         info = shader_preparation(self.game, self.profiles) if self.game else None
         if not info:
-            return ("Shaders: not prepared. Without preparation, the first session translates each shader the first time it is "
+            return ("Not prepared. Without preparation, the first session translates each shader the first time it is "
                     "used and the picture pauses for it.")
         failed = f", {info['failed']} not supported by the translator" if info.get("failed") else ""
-        return (f"Shaders: {info.get('validated', 0):,} prepared and validated of {info['discovered']:,}{failed} "
+        return (f"{info.get('validated', 0):,} prepared and validated of {info['discovered']:,}{failed} "
                 f"({info.get('at', '')[:10]}, {info.get('seconds', 0) / 60:.0f} min). Vulkan pipelines are still built by the "
                 "graphics driver the first time a scene uses them.").replace(",", " ")
 

@@ -63,22 +63,28 @@ def _rgba(colour, alpha):
 
 
 @lru_cache(maxsize=256)
-def _leaning(w, h, slant, colour):
+def _leaning(w, h, slant, colour, slab, slab_colour):
     rise = math.hypot(1, slant / h)
+    first, main = rgb(slab_colour or colour), rgb(colour)
     rows = []
     for y in range(h):
         t = (y + 0.5) / h
         left, right = slant * (1 - t), w - slant * t
-        edge = lambda x: _rgba(colour, 0.5 + min((x + 0.5 - left) / rise, (right - x - 0.5) / rise))
-        low, high = int(left) + 2, int(right) - 2
-        rows.append(b"".join(edge(x) for x in range(low)) + _rgba(colour, 1) * max(0, high - low)
-                    + b"".join(edge(x) for x in range(max(low, high), w)))
+
+        def pixel(x):
+            alpha = _cut(0.5 + min((x + 0.5 - left) / rise, (right - x - 0.5) / rise))
+            share = _cut(0.5 + (x + 0.5 - left - slab) / rise) if slab else 1.0
+            return bytes((*(round(a + (b - a) * share) for a, b in zip(first, main)), round(alpha * 255)))
+
+        low, high = int(left + slab) + 3, int(right) - 2
+        rows.append(b"".join(pixel(x) for x in range(min(low, w))) + bytes((*main, 255)) * max(0, high - low)
+                    + b"".join(pixel(x) for x in range(max(low, high), w)))
     return png(w, h, rows)
 
 
-def leaning(w, h, slant, colour):
-    """A bar that leans: its top is `slant` pixels further right than its bottom."""
-    args = (int(w), int(h), int(slant), colour)
+def leaning(w, h, slant, colour, slab=0, slab_colour=None):
+    """A bar that leans: its top is `slant` pixels further right than its bottom. slab: how much of its left is of another colour."""
+    args = (int(w), int(h), int(slant), colour, int(slab), slab_colour)
     return picture(("leaning", *args), lambda: _leaning(*args))
 
 

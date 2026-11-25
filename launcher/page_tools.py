@@ -1,13 +1,12 @@
 # SwitchRecomp - Copyright 2026 MZ Labs
-"""The Profiles page (players, their saves) and the Tools page (Steam, updates, problem reports, folders), as rows."""
+"""The Saves page and the Tools page (shortcuts, updates, problem reports, folders), as rows."""
 
-import tempfile
 import webbrowser
 from pathlib import Path
 from tkinter import filedialog
 
-from . import dialogs, steam
-from .core import RELEASES_URL, latest_run, runtime_info, setup_log
+from . import desktop, dialogs, steam
+from .core import RELEASES_URL, WINDOWS, latest_run, runtime_info, setup_log
 from .rows import Rows
 
 
@@ -22,54 +21,35 @@ class RowsPage:
         return not (self.app.process or self.app.job)
 
 
-class ProfilesPage(RowsPage):
+class SavesPage(RowsPage):
+    """The saves, as one player has them. Profiles of an earlier version stay reachable: their saves are never out of sight."""
+
     def build(self):
         rows, app, idle = self.rows, self.app, self.idle
-        rows.group("Players")
-        rows.choice("Active profile", lambda: tuple(app.profiles.entries), lambda: app.profiles.active, self.select,
-                    "Who plays next. Each profile has its own settings and save folder.",
-                    show=lambda key: app.profiles.entries[key]["name"], enabled=idle)
-        rows.action("New profile", "Create", lambda: self.name("New profile", "", app.profiles.create), "Another player, with their own saves "
-                    "and the default settings.", enabled=idle)
-        rows.action("Rename this profile", "Rename", lambda: self.name("Rename the profile", app.profiles.profile["name"], app.profiles.rename),
-                    "The saves and the settings stay.", enabled=idle)
-        rows.action("Delete this profile", "Delete…", self.delete, "It leaves the list. Its files are moved to archived-profiles in the launcher's "
-                    "folder, not erased.", enabled=lambda: idle() and len(app.profiles.entries) > 1)
         rows.group("Saves")
+        if len(app.profiles.entries) > 1:
+            rows.choice("Saves in use", lambda: tuple(app.profiles.entries), lambda: app.profiles.active, self.select,
+                        "An earlier version of the launcher kept several sets of saves, each with its settings. This one plays.",
+                        show=lambda key: app.profiles.entries[key]["name"], enabled=idle)
         rows.action("Back up", "Create a copy", lambda: self.copy(app.profiles.backup), "A copy of the saves with the time in its name, in the "
-                    "profile's backups.", enabled=idle)
+                    "launcher's folder.", enabled=idle)
         rows.action("Import or restore", "Choose a folder", self.restore, "Puts a save folder, or a copy made by the launcher, in place of the "
-                    "active saves. A copy of those is kept first.", enabled=idle)
+                    "saves in use. A copy of those is kept first.", enabled=idle)
         rows.action("Export", "Choose a folder", self.export, "A copy of the saves in a folder of yours.", enabled=idle)
-        rows.action("Save folder", "Open", lambda: app.open_folder(app.profiles.saves), "Where the game writes this profile's saves.")
+        rows.group("Folder")
+        rows.action("Save folder", "Open", lambda: app.open_folder(app.profiles.saves), "Where the game writes its saves.")
 
     def select(self, profile):
         self.app.guard()
         self.app.profiles.select(profile)
-
-    def name(self, title, value, keep):
-        self.app.guard()
-        profiles = self.app.profiles
-        exclude = profiles.active if value else None   # (its own name may stay)
-        name = dialogs.ask_text(self.app.root, title, "Name (1 to 32 characters)", value,
-                                check=lambda text: profiles.validate_name(text, exclude=exclude))
-        if name is not None:
-            keep(name)
-
-    def delete(self):
-        self.app.guard()
-        name = self.app.profiles.profile["name"]
-        if dialogs.confirm(self.app.root, "Delete the profile", f"Remove {name} from the list? Its files are kept in archived-profiles.",
-                           yes="Remove", alarm=True):
-            self.app.profiles.archive()
 
     def copy(self, operation):
         self.app.background("Copying the saves…", operation, lambda path: self.app.page_state.set(f"Copy finished · {path.name}"))
 
     def restore(self):
         self.app.guard()
-        path = filedialog.askdirectory(parent=self.app.root, title="Folder to import into the active profile")
-        if path and dialogs.confirm(self.app.root, "Restore the saves", "Replace the active saves? A copy of them is kept.", yes="Replace"):
+        path = filedialog.askdirectory(parent=self.app.root, title="Save folder to import")
+        if path and dialogs.confirm(self.app.root, "Restore the saves", "Replace the saves in use? A copy of them is kept.", yes="Replace"):
             self.copy(lambda: self.app.profiles.restore(Path(path)))
 
     def export(self):
@@ -82,8 +62,11 @@ class ProfilesPage(RowsPage):
 class ToolsPage(RowsPage):
     def build(self):
         rows, app = self.rows, self.app
-        self.steam_said = ""
-        rows.group("Steam")
+        self.steam_said = self.shortcut_said = ""
+        rows.group("Shortcuts")
+        rows.action("Desktop shortcut" if WINDOWS else "Application menu", "Add", self.add_shortcut,
+                    lambda: ("The launcher with its icon on your desktop." if WINDOWS else "The launcher with its icon in your application menu.")
+                    + " Adding it again replaces it." + (f"\n\n{self.shortcut_said}" if self.shortcut_said else ""))
         rows.action("Add to Steam", "Add", self.add_to_steam,
                     lambda: "The launcher as a non-Steam game, for Big Picture and the Steam Deck, with its library images. Your other shortcuts "
                     "are kept, and a copy of the list before. Adding it again replaces it."
@@ -110,22 +93,24 @@ class ToolsPage(RowsPage):
         rows.group("About")
         rows.action("Versions", "Copy", self.copy_versions, lambda: "\n".join(self.versions()))
 
+    def add_shortcut(self):
+        try:
+            self.shortcut_said = desktop.add_shortcut()
+        except (OSError, ValueError) as error:   # (LauncherError is a ValueError)
+            self.shortcut_said = f"The shortcut could not be made: {error}"
+        self.app.page_state.set(self.shortcut_said)
+
     def add_to_steam(self):
         app = self.app
-        folder = Path(tempfile.mkdtemp(prefix="orbitals-steam-"))
-        images = steam.draw_images(app.root, folder)
 
         def done(result):
-            for image in images.values():
-                image.unlink(missing_ok=True)
-            folder.rmdir()
             self.steam_said = str(result)   # what was done, or the error
             app.page_state.set(str(result))
             if self.rows.pane.winfo_exists():
                 self.rows.sync()
 
         self.steam_said = "Adding…"
-        app.probe(lambda: steam.add(images), done)
+        app.probe(lambda: steam.add(steam.images()), done)
 
     def last_session(self):
         app = self.app

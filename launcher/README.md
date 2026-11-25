@@ -1,8 +1,8 @@
 # Orbitals PC Recomp launcher
 
-A desktop launcher in Python and Tk for Windows and Linux: installation from your own game files, save profiles, graphics settings and
-bug reports. Its colours follow the reference artwork (blue-black, cyan light, ivory, vermilion); the banner is an original
-illustration. The `launcher/` folder holds the interface, the local operations and the tests.
+A desktop launcher in Python and Tk for Windows and Linux: installation from your own game files, saves, graphics settings and bug
+reports. Its title card, logotype and icon are its own drawings (`tools/launcher_art`), without art of the game. The `launcher/` folder
+holds the interface, the local operations and the tests.
 
 ## Start
 
@@ -15,7 +15,7 @@ to install Python 3.13 with winget), or:
 python -B -m launcher
 ```
 
-`pythonw -B -m launcher` opens the same window without a console. Profiles need a local NTFS volume (they use junctions). Python can
+`pythonw -B -m launcher` opens the same window without a console. The data folder needs a local NTFS volume (it uses junctions). Python can
 live anywhere; it does not have to be next to the Orbitals build. The Python that `Install.bat` downloads for the recompiler has no Tk
 and cannot run the launcher.
 
@@ -36,7 +36,7 @@ A controller drives the launcher (SDL3, SDL2 or XInput): the directions choose, 
 tab and Start plays. Only while its window is in front and no game runs. **General → Controller in the launcher** turns it off;
 *Automatic* leaves it off on the Deck's desktop, where Steam Input already turns the controls into keys and a mouse.
 
-`--game-dir` selects a local build explicitly. `--data-dir` uses another folder for profiles and reports. By default the launcher keeps
+`--game-dir` selects a local build explicitly. `--data-dir` uses another folder for saves and reports. By default the launcher keeps
 its data in `%LOCALAPPDATA%/OrbitalsLauncher` on Windows, and in `$XDG_DATA_HOME/orbitals-launcher` or `~/.local/share/orbitals-launcher`
 on Linux.
 
@@ -53,7 +53,7 @@ on Linux.
    GPU driver.
 
 The title screen's menu holds the pages. A card on its left says what needs you, one thing at a time: a failure with what can be done
-about it, a new version, a game compiled by an older one, shaders not prepared. The chips under it (game, shaders, profile) and the
+about it, a new version, a game compiled by an older one, shaders not prepared. The chips under it (game, shaders) and the
 controllers' line lead to their pages. The arrow keys reach all of it, and F11 makes the window full screen.
 
 The first session translates the game's shaders while it runs: the picture can pause for a few seconds, mostly behind loading screens
@@ -61,13 +61,14 @@ The first session translates the game's shaders while it runs: the picture can p
 If `control.nacp` is available, the launcher shows the game's version; otherwise the ExeFS build id. The release and commit of the
 runtime come from the first lines of its log, once a session has run. The `.nup` format is shown as not supported.
 
-## Profiles and settings
+## Saves and settings
 
 The runtime finds `Orbitals_data/save` from its executable's path, so each session runs from a launch folder where that path points to
-the active profile. ExeFS and RomFS are linked read-only; the original installation is never written.
+the launcher's saves. ExeFS and RomFS are linked read-only; the original installation is never written.
 
-**Profiles** creates, selects and renames profiles, and archives one after confirmation. To continue a game played from another build,
-use **Import or restore** with its `Orbitals_data/save`; a restore keeps the previous save in `backups/`.
+**SAVES** backs them up, imports and exports them. To continue a game played from another build, use **Import or restore** with its
+`Orbitals_data/save`; a restore keeps the previous save in `backups/`. Earlier versions of the launcher kept profiles, each with its own
+saves and settings: if you made several, **Saves in use** chooses which one plays.
 
 A setting is saved as soon as it is changed and applies at the next launch; what the selected one does stands beside the rows.
 The arrow keys go through the rows and change their values, Ctrl+Tab goes through the tabs, and clicking a value lists all of them.
@@ -78,7 +79,7 @@ In **Graphics**, choose **High** for the game's TV profile, **Low** for its hand
 resolution from 960×540 to 1920×1080. The game draws the HUD at 1080p. Set the physical output size in **Windowed** mode. **Borderless**
 uses the monitor's desktop resolution. The same tab sets upscaling, VSync and frame rate. **30 (async replay)** keeps the 30 FPS cap
 with replay on a separate thread. It reduced cinematic slowdown under CPU contention in the Windows test. Settings
-apply per profile at the next launch. See GRAPHICS_SETTINGS.md for the measurements. **General** contains the volume, the title
+apply at the next launch. See GRAPHICS_SETTINGS.md for the measurements. **General** contains the volume, the title
 screen's animation, the issues URL and the check for updates at start.
 On Windows, **F1 → 3D resolution (this session)** changes the actual scene resolution while the game is running.
 
@@ -96,8 +97,11 @@ INI settings.
 
 ## Tools
 
-**Add to Steam** adds the launcher as a non-Steam game for every Steam user of the PC, with library images cut from the launcher's
-illustration. The other shortcuts are kept, and a copy of the list before is left beside it (`shortcuts.vdf.before-orbitals`); an image you
+**Desktop shortcut** (on Linux, **Application menu**) adds the launcher with its icon. On Windows the launcher has an identity of its own,
+so the taskbar shows its icon, and a pin starts `Orbitals-Launcher.pyw`.
+
+**Add to Steam** adds the launcher as a non-Steam game for every Steam user of the PC, with library images drawn as the launcher's
+title card. The other shortcuts are kept, and a copy of the list before is left beside it (`shortcuts.vdf.before-orbitals`); an image you
 set yourself stays. Part of it is from [mkw-recomp](https://github.com/adriadam10/mkw-recomp) (MIT, `LICENSE_mkw-recomp.txt`).
 
 ## Report a problem
@@ -132,6 +136,12 @@ Vulkan device also come from the game log. The 24 MB limit leaves a margin under
 [GitHub's attachment limit](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/attaching-files).
 Reports are never sent automatically.
 
+## Drawings and typefaces
+
+`tools/launcher_art/render.py` draws the icon, the logotype and the Steam images again (it needs Pillow and the Dela Gothic One font, SIL
+Open Font License). `launcher/paint.py` draws the bars, the screentone and the small shapes while the launcher runs, at the screen's
+scale. Barlow and Barlow Condensed (SIL Open Font License, `assets/fonts/OFL.txt`) are loaded for the launcher only: nothing is installed.
+
 ## Tests and distribution
 
 ```text
@@ -141,7 +151,7 @@ python -B -m launcher.tests.shots OUT --size 880x650 --dpi 144
 
 The second line writes a picture of every page (it needs Pillow).
 
-The launcher runs from source with the standard library and Tk. The tests cover detection, preparation, profile isolation, restores,
+The launcher runs from source with the standard library and Tk. The tests cover detection, preparation, the isolation of saves, restores,
 launch errors, graphics settings (including values saved by the earlier French interface), the update check, the installer step
 parsing, stopping a job, the Steam shortcut and the reports, and every page of the window at its minimum size. The launcher was checked with the Windows runtime. The Linux x86-64 package can be tested using the
 [the README](../README.md#getting-started).

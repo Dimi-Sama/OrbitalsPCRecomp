@@ -18,7 +18,7 @@ from launcher.tasks import Stopped
 from launcher.ui import Launcher
 from launcher.tests.test_launcher import build_fixture
 
-PAGES = ("Home", "Profiles", "Graphics", "Controls", "Settings", "Files", "Tools")
+PAGES = ("Home", "Saves", "Graphics", "Controls", "Settings", "Files", "Tools")
 
 
 class LauncherWindow(unittest.TestCase):
@@ -101,7 +101,7 @@ class LauncherWindowTest(LauncherWindow):
         app = self.window()
         app.pad_names = ["Pad"]
         app.show("Home")
-        for pick, page in ((lambda s: s.chips[0], "Files"), (lambda s: next(e for e in s.entries if e.label == "SAVES"), "Profiles"), (lambda s: s.pads_spot, "Controls")):
+        for pick, page in ((lambda s: s.chips[0], "Files"), (lambda s: next(e for e in s.entries if e.label == "SAVES"), "Saves"), (lambda s: s.pads_spot, "Controls")):
             app.show("Home"); self.spin(0.1)
             screen = self.title(app)
             with patch.object(page_settings, "gamepad_inventory", return_value=("XInput", [])):
@@ -173,14 +173,14 @@ class LauncherWindowTest(LauncherWindow):
         found = {}
         for child in widget.winfo_children():
             if child.winfo_class() == "TButton":
-                found[child.cget("text")] = child
+                found[child.cget("text").capitalize()] = child
             found |= self.buttons(child)
         return found
 
     def test_files_page_takes_a_copy_and_installs_it(self):
         app = self.window(game=False)
         app.show("Files"); self.spin(0.1)
-        self.assertTrue(self.buttons(app.page)["INSTALL"].instate(["disabled"]))
+        self.assertTrue(self.buttons(app.page)["Install"].instate(["disabled"]))
         holder = self.root / "extracted"   # holds the copy, as some tools make it
         (holder / "game" / "exefs").mkdir(parents=True)
         app.set_source(holder)
@@ -191,7 +191,7 @@ class LauncherWindowTest(LauncherWindow):
         app.set_source(holder)
         self.assertEqual(app.source(), holder / "game")
         app.refresh(); self.spin(0.1)
-        install = self.buttons(app.page)["INSTALL"]
+        install = self.buttons(app.page)["Install"]
         self.assertTrue(install.instate(["!disabled"]))
         native = self.root / "game"
         build_fixture(native)
@@ -207,8 +207,8 @@ class LauncherWindowTest(LauncherWindow):
             self.assertEqual(app.active_page, "Home")   # its demo
             self.assertIn("Stop", self.buttons(app.page))
             app.show("Files"); self.spin(0.3)
-            self.assertTrue(app.view.steps[2][1].cget("text").startswith("✓"))
-            self.assertTrue(app.view.steps[3][1].cget("text").startswith("▶"))
+            colours = [line.cget("fg") for _, line in app.view.steps]
+            self.assertEqual(colours, [look.CYAN] * 3 + [look.INK, look.MUTED])
             self.spin(0.6)
         self.assertEqual(app.game.root, native.resolve())
         self.assertEqual((app.active_page, app.card().title), ("Home", "Shaders are not prepared"))
@@ -253,21 +253,32 @@ class LauncherWindowTest(LauncherWindow):
         self.assertIsNone(app.game)
         self.assertEqual(app.card().title, "The game is not complete")
 
-    def test_profiles_as_rows(self):
+    def test_saves_without_profiles_and_those_of_an_earlier_version(self):
         app = self.window()
-        app.show("Profiles")
-        self.assertFalse(self.row(app, "Delete this profile").on, "the only one")
-        with patch.object(page_tools.dialogs, "ask_text", return_value="Second"):
-            self.row(app, "New profile").press()
-        active = self.row(app, "Active profile")
-        self.assertEqual(active.value.cget("text"), "Second")
-        active.move(-1)
-        self.assertEqual(app.profiles.profile["name"], "Player")
-        self.assertTrue(self.row(app, "Delete this profile").on)
+        app.show("Saves")
+        captions = [row.caption for row in app.view.rows.items]
+        self.assertNotIn("Saves in use", captions)
+        first = app.profiles.active
+        app.profiles.create("Second")   # as an earlier launcher left it
+        app.show("Saves")
+        saves = self.row(app, "Saves in use")
+        self.assertEqual(saves.value.cget("text"), "Second")
+        saves.move(-1)
+        self.assertEqual(app.profiles.active, first)
+
+    def test_the_selected_row_is_the_lit_one_while_the_keys_are_on_it(self):
+        app = self.window()
+        app.show("Tools"); self.spin(0.2)
+        self.tk.focus_force(); self.spin(0.1)
+        rows = app.view.rows
+        rows.selected.focus_set(); self.spin(0.1)
+        self.assertEqual([row.caption for row in rows.items if row.chosen], [rows.selected.caption])
+        app.focus_header(); self.spin(0.1)
+        self.assertFalse(rows.selected.keyed)
 
     def test_a_job_that_ends_leaves_the_player_where_they_were(self):
         app = self.window()
-        app.show("Profiles")
+        app.show("Saves")
         app.view.rows.choose("Back up")
         app.background("Copying…", lambda: time.sleep(0.1), lambda _: None)
         self.spin(0.5)
@@ -282,10 +293,11 @@ class LauncherWindowTest(LauncherWindow):
         app = self.window()
         app.show("Tools")
         with patch.object(page_tools.steam, "add", side_effect=core.LauncherError("Steam was not found on this PC.")) as add:
+            app.view.rows.choose("Add to Steam")
             self.row(app, "Add to Steam").press()
             self.spin(0.6)
-        self.assertEqual(set(add.call_args.args[0]), {"p.png", ".png", "_hero.png"})
-        self.assertIn("not found", app.view.rows.text.cget("text"))
+        self.assertEqual(set(add.call_args.args[0]), {"p.png", ".png", "_hero.png", "_logo.png"})
+        self.assertIn("not found", self.row(app, "Add to Steam").describe())
 
     def test_a_long_card_stays_above_the_chips(self):
         app = self.window()

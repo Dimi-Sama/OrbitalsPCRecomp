@@ -10,7 +10,7 @@ import random
 import tkinter as tk
 from tkinter import font
 
-from . import paint
+from . import look, paint
 from .look import px
 
 INK = "#f4f1ff"
@@ -376,8 +376,7 @@ class TitleScreen(tk.Canvas):
             if on:   # the selected entry: a slanted bar with its hard shadow and a cursor, like a game menu
                 wide, high, slant = right - left, bottom - top, px(16)
                 image(left + px(6), top + px(6), paint.leaning(wide, high, slant, "#5a0f30"))
-                image(left, top, paint.leaning(wide, high, slant, INK))
-                image(left, top, paint.leaning(slant + px(9), high, slant, PINK))
+                image(left, top, paint.leaning(wide, high, slant, INK, px(9), PINK))
                 image(self.x0 - px(20), top + high / 2, paint.shape("next", px(15), PINK), "w")
             text(self.x0, top - px(1), text=spot.label, font=self.f_menu, fill=PINK_D if on else (INK if spot.enabled else DIM), anchor="nw")
             text(self.x0 + px(2), top + px(2) + line, text=spot.hint, font=self.f_hint, width=self.hint_width,
@@ -446,15 +445,14 @@ class HeaderStrip(tk.Canvas):
     the current tab underlined. Left and right go through BACK and the tabs, Enter takes one; down goes to the page (on_down)."""
 
     def __init__(self, parent, title, tabs, current, on_tab, on_back, on_down=lambda: None, height=86):
-        super().__init__(parent, bg=NIGHT, highlightthickness=0, height=px(height), takefocus=1)
-        fam = set(font.families())
-        disp = pick(fam, "Bahnschrift", "DejaVu Sans Condensed", "Liberation Sans Narrow", "Arial Narrow", "TkDefaultFont")
-        self.f_title = font.Font(family=disp, size=24, weight="bold"); self.f_tab = font.Font(family=disp, size=13, weight="bold")
-        self.f_back = font.Font(family=disp, size=12, weight="bold")
+        super().__init__(parent, bg=look.BG, highlightthickness=0, height=px(height), takefocus=1)
+        self.f_title = font.Font(family=look.HEADING, size=25, weight="bold", slant="italic")
+        self.f_tab = font.Font(family=look.HEADING, size=17, weight="bold", slant="italic")
+        self.f_back = font.Font(family=look.HEADING, size=14, weight="bold", slant="italic")
         self.title, self.tabs, self.current, self.tall = title, tabs, current, px(height)
         self.places = [on_back] + [lambda p=page: on_tab(p) for page, _ in tabs]
         self.cursor = next((i + 1 for i, (page, _) in enumerate(tabs) if page == current), 0)
-        self.focused = False; self.boxes = []
+        self.focused = False; self.boxes = []; self.ground = None
         self.bind("<Configure>", lambda e: self.draw())
         self.bind("<FocusIn>", lambda e: self._focus(True)); self.bind("<FocusOut>", lambda e: self._focus(False))
         self.bind("<Left>", lambda e: self._move(-1)); self.bind("<Right>", lambda e: self._move(1))
@@ -479,31 +477,50 @@ class HeaderStrip(tk.Canvas):
         self.cursor = max(0, min(len(self.places) - 1, self.cursor + direction))
         self.draw()
 
+    def _ground(self, split, h):
+        """The diagonal's lines, and the screentone out of its dark edge; drawn once for a place."""
+        if not self.ground or self.ground[0] != split:
+            at = lambda y: split - px(30) * y / h
+            x0, x1 = max(0, int(at(h)) - px(120)), int(split) + px(20)
+            tone = paint.screentone(x0, 0, x1 - x0, h, lambda x, y: 0 if at(y) - x < -px(6) else max(0.0, 1 - (at(y) - px(16) - x) / px(80)) * 0.9, BLUE_D)
+            lines = paint.diagonal(x1 - x0, h, lambda y: at(y) - x0, [(px(-16), 0, BLUE_D), (px(-2), px(3), INK), (px(3), px(10), NIGHT),
+                                                                     (px(10), px(12), GOLD), (px(12), None, look.BG)])
+            self.ground = split, (x0, x1, tone, lines)
+        return self.ground[1]
+
     def draw(self):
         self.delete("all")
         w, h = max(self.winfo_width(), 400), self.tall
-        back_w = self.f_back.measure("◀  BACK")
-        tw = self.f_title.measure(self.title) + px(40)
-        x0 = px(140)
-        split = max(w * 0.42, x0 + tw + px(50))   # right of the title, however wide
-        self.create_polygon(0, 0, split, 0, split - px(30), h, 0, h, fill=BLUE_D, outline="")
-        self.create_line(split, 0, split - px(30), h, fill=GOLD, width=px(2))
-        self.create_line(split + px(10), 0, split - px(20), h, fill=INK, width=px(3))
-        self.create_text(px(26), h / 2, text="◀  BACK", font=self.f_back, fill=CYAN, anchor="w")
-        self.boxes = [(px(16), px(36) + back_w)]
+        back_w = self.f_back.measure("BACK") + px(22)
+        tw = self.f_title.measure(self.title) + px(48)
+        x0 = px(136)
+        split = round(max(w * 0.42, x0 + tw + px(64)))   # right of the title, however wide
+        ground, right, tone, lines = self._ground(split, h)
+        self.create_rectangle(0, 0, right, h, fill=BLUE, outline="")
+        for k in range(9):   # the rays of the title screen, from under the corner
+            a, b = -(k + 0.15) / 18 * math.tau / 2, -(k + 0.55) / 18 * math.tau / 2
+            self.create_polygon(-px(30), h + px(90), math.cos(a) * split * 2, h + px(90) + math.sin(a) * split * 2,
+                                math.cos(b) * split * 2, h + px(90) + math.sin(b) * split * 2, fill=BLUE_L, outline="")
+        self.create_rectangle(right, 0, w, h, fill=look.BG, outline="")
+        self.create_image(ground, 0, image=tone, anchor="nw")
+        self.create_image(ground, 0, image=lines, anchor="nw")
+        self.create_image(px(24), h / 2, image=paint.shape("before", px(15), CYAN), anchor="w")
+        self.create_text(px(46), h / 2, text="BACK", font=self.f_back, fill=INK, anchor="w")
+        self.boxes = [(px(14), px(34) + back_w)]
         edge, slant = px(20), px(12)
-        self.create_polygon(x0, edge, x0 + tw, edge, x0 + tw - slant, h - edge, x0 - slant, h - edge, fill=PINK, outline="")
-        self.create_text(x0 + px(10), h / 2, text=self.title, font=self.f_title, fill=NIGHT, anchor="w")
+        self.create_image(x0 - slant + px(4), edge + px(4), image=paint.leaning(tw, h - 2 * edge, slant, SHADOW), anchor="nw")
+        self.create_image(x0 - slant, edge, image=paint.leaning(tw, h - 2 * edge, slant, PINK), anchor="nw")
+        self.create_text(x0 - slant + tw / 2, h / 2, text=self.title, font=self.f_title, fill=NIGHT)
         x = split + px(40)
         for page, lab in self.tabs:
             on = page == self.current
             lw = self.f_tab.measure(lab)
             self.create_text(x, h / 2, text=lab, font=self.f_tab, fill=INK if on else MUTED, anchor="w")
             if on:
-                self.create_rectangle(x, h / 2 + px(14), x + lw, h / 2 + px(17), fill=CYAN, outline="")
+                self.create_image(x - px(4), h / 2 + px(15), image=paint.leaning(lw + px(6), px(5), px(2), CYAN), anchor="nw")
             self.boxes.append((x - px(12), x + lw + px(12)))
             x += lw + px(34)
         if self.focused:
             left, right = self.boxes[self.cursor]
-            self.create_rectangle(left, h / 2 - px(22), right, h / 2 + px(22), outline=CYAN, width=px(2))
+            self.create_rectangle(left, h / 2 - px(22), right, h / 2 + px(24), outline=INK, width=px(2))
         self.create_line(0, h - 1, w, h - 1, fill=LINE_C, width=1)

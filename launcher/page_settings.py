@@ -26,7 +26,7 @@ def valid_size(text):
 
 
 class SettingsPage:
-    """What the three pages share: the rows, and reading and keeping one setting of the active profile."""
+    """What the three pages share: the rows, and reading and keeping one setting."""
 
     def __init__(self, app):
         self.app = app

@@ -11,7 +11,7 @@ import tkinter as tk
 from pathlib import Path
 from unittest.mock import patch
 
-from launcher import core, look, page_settings, ui
+from launcher import core, fonts, look, page_settings, ui
 from launcher.tests.test_launcher import build_fixture
 
 
@@ -44,6 +44,7 @@ def main():
     parser.add_argument("--dpi", type=float, default=96)
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
+    fonts.load()
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder, patch.object(ui.Launcher, "update_result", lambda *a, **k: None), \
             patch.object(ui, "detect_installation", return_value=None), patch.object(ui, "scale_to", lambda root: look.scale_to(root, args.dpi)), \
             patch.object(page_settings, "gamepad_inventory", return_value=("SDL3", [("A controller", True)])):
@@ -56,7 +57,7 @@ def main():
                 with core.setup_logging(local):
                     app = ui.Launcher(root, local, installed)
                     root.geometry(f"{size}+20+20"); root.update(); root.focus_force()
-                    for name in ("Graphics", "Controls", "Settings", "Profiles", "Files", "Tools"):
+                    for name in ("Graphics", "Controls", "Settings", "Saves", "Files", "Tools"):
                         app.show(name)
                         picture(root, args.out / f"{state}-{size}-{name}.png")
                     for name, bring in cards(app) if installed else (("setup", lambda: None),):

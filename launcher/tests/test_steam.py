@@ -1,7 +1,7 @@
 # Orbitals PC Recomp, a work based on SwitchRecomp by MZ Labs. GNU AGPL v3.0 with the additional terms of NOTICE.txt (LICENSE.txt).
 """Add to Steam (launcher/steam.py), on a stand-in Steam folder."""
+import struct
 import tempfile
-import tkinter as tk
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -72,16 +72,9 @@ class SteamTest(unittest.TestCase):
             steam.add(self.images, self.root / "nowhere")
 
     def test_images_have_steams_sizes(self):
-        try:
-            window = tk.Tk()
-        except tk.TclError as error:
-            self.skipTest(f"no display for Tk: {error}")
-        self.addCleanup(window.destroy)
-        window.withdraw()
-        images = steam.draw_images(window, self.root / "drawn")
-        sizes = {suffix: (image.width(), image.height())
-                 for suffix, image in ((suffix, tk.PhotoImage(master=window, file=str(path))) for suffix, path in images.items())}
-        self.assertEqual(sizes, {"p.png": (600, 900), ".png": (920, 430), "_hero.png": (1920, 620)})
+        sizes = {suffix: struct.unpack(">II", path.read_bytes()[16:24]) for suffix, path in steam.images().items()}
+        self.assertEqual({suffix: size for suffix, size in sizes.items() if suffix != "_logo.png"},
+                         {"p.png": (600, 900), ".png": (920, 430), "_hero.png": (1920, 620)})
 
 
 if __name__ == "__main__":
