@@ -17,7 +17,8 @@ from .core import (DEFAULT_SETTINGS, LOG, REPO, WINDOWS, LauncherError, Profiles
                    validate_settings)
 from .demo import DemoScreen
 from .look import BG, CYAN, MUTED, PANEL, PEACH, RAIL, RED, ScrollPage, label, px, surface, theme
-from .neo import HeaderStrip, TitleScreen
+from .neo import Card, HeaderStrip, TitleScreen
+from .pads import Pads
 from .page_settings import REMOVED, ControlsPage, GeneralPage, GraphicsPage
 from .report_form import ReportForm, show_text
 from .reports import gpu_info, system_info
@@ -41,7 +42,9 @@ class Launcher:
         self.profiles = Profiles(local)
         self.game = None
         self.template = None
-        self.error_text = ""
+        self.notice = None           # a Card the title screen shows until it is dismissed (a failure)
+        self.update_info = self.update_kit = None; self.update_answer = ""; self.update_later = False
+        self.retry = None            # what starts the running job again, if it fails
         self.job = None
         self.process = None
         self.run = None
@@ -72,22 +75,62 @@ class Launcher:
             try:
                 self.game = installation(candidate)
             except (OSError, LauncherError) as error:
-                self.error_text = str(error)
+                self.fail("The installation was not opened", f"{error}\n{candidate}", ("Use another installation", self.locate))
         else:
             self.game = detect_installation()
         self.template = self.game
         LOG.info("event=detect ready=%s", self.game is not None)
+        self.pads = Pads([*((self.game.root,) if self.game else ()), REPO / "bin"])
+        self.pad_names = None
+        self.pads_timer = root.after(50, self.watch_pads)
         self.build_shell()
         self.show("Home")
         self.pump()
         if self.profiles.data.get("update_check", True):   # on unless turned off in Settings; one request to GitHub's releases API
             threading.Thread(target=lambda: self.update_result(quiet=True), daemon=True).start()
-        self.offer_timer = self.root.after(600, self.offer_recompile)
 
     def closed(self, event):
         if event.widget is self.root:
-            for timer in (self.pump_timer, self.offer_timer):
+            for timer in filter(None, (self.pump_timer, self.pads_timer, self.flush_timer)):
                 self.root.after_cancel(timer)
+            self.pads.close()
+
+    def watch_pads(self):
+        """The controllers for the title screen's line; not while a game runs, they are its own then."""
+        if self.process:
+            self.pads.close()
+            names = self.pad_names
+        else:
+            self.pads.open()
+            names = self.pads.names()
+        if names != self.pad_names:
+            self.pad_names = names
+            screen = self.title_screen()
+            if screen and screen.pads_spot is None:   # the first answer: its line is there from now on
+                self.show("Home")
+            elif screen:
+                screen.set_pads(*self.pads_line())
+        self.pads_timer = self.root.after(1000, self.watch_pads)
+
+    def pads_line(self):
+        names = self.pad_names or []
+        if not names:
+            return "No controller connected", False
+        more = f" and {len(names) - 2} more" if len(names) > 2 else ""
+        return (f"{len(names)} controllers: " if len(names) > 1 else "") + ", ".join(names[:2]) + more, True
+
+    def title_screen(self):
+        return next((w for w in self.page.winfo_children() if isinstance(w, TitleScreen)), None) if self.active_page == "Home" else None
+
+    def fail(self, title, text, *buttons):
+        """Something failed: the title screen says it until it is dismissed."""
+        self.notice = Card(title, text, [(label_text, lambda run=run: (self.dismiss(), self.action(run))) for label_text, run in buttons]
+                           + [("Dismiss", self.dismiss)], alarm=True)
+
+    def dismiss(self):
+        self.notice = None
+        if self.active_page == "Home":
+            self.show("Home")
 
     def post(self, function):
         """From any thread: run function on the Tk thread (Tk calls from another thread can fail while a window closes)."""
@@ -177,25 +220,17 @@ class Launcher:
             self.header.tk_focusNext().focus_set()
 
     def check_now(self):
-        self.page_state.set("Checking for updates…")
+        self.update_answer = "Checking…"
         threading.Thread(target=self.update_result, daemon=True).start()
 
-    def offer_recompile(self, asked_now=False):
-        """A game compiled by an older release: say it once per (game release, launcher version), and from Play."""
+    def old_game(self):
+        """The older release the game was compiled by, unless keeping it was already chosen for this launcher version."""
         old = outdated_release(self.game) if self.game else None
-        if not old or self.job:
-            return False
-        key = f"{old}->{VERSION}"
-        if not asked_now and self.profiles.data.get("recompile_declined") == key:
-            return False
-        if messagebox.askyesno("Update the game",
-                               f"Your game was compiled by version {old}; this launcher is {VERSION}.\n\n"
-                               "Recompile it now to get the fixes and improvements of this version? It takes 20 to 60 minutes, "
-                               "once. Your saves are kept, and the old installation is left as it is.", parent=self.root):
-            self.action(self.recompile_game)
-            return True
-        self.profiles.update(recompile_declined=key)
-        return False
+        return old if old and self.profiles.data.get("recompile_declined") != f"{old}->{VERSION}" else None
+
+    def keep_old_game(self):
+        self.profiles.update(recompile_declined=f"{self.old_game()}->{VERSION}")
+        self.refresh()
 
     def recompile_game(self):
         """Recompile the current game's own files with this kit; the old installation (and its saves) stays untouched."""
@@ -221,7 +256,7 @@ class Launcher:
         self.background("Recompiling…",
                         lambda: install_from_files(source, on_progress=lambda s, n, t: self.events.put(("progress", (s, n, t))),
                                                    rebuild=in_place),
-                        done, demo="RECOMPILING ORBITALS")
+                        done, demo="RECOMPILING ORBITALS", retry=self.recompile_game)
 
     def update_result(self, quiet=False):
         """Runs on a worker thread: asks GitHub for the latest release and hands the answer to the Tk thread."""
@@ -232,46 +267,75 @@ class Launcher:
         self.post(lambda: self.show_update(info, error, quiet))
 
     def show_update(self, info, error, quiet):
-        if error:
-            if not quiet:
-                messagebox.showwarning("Updates", error, parent=self.root)
-            return
-        if info is None:
-            if not quiet:
-                messagebox.showinfo("Updates", "No update repository is set in this version of the launcher.", parent=self.root)
-            return
-        if not info["newer"]:
+        """The answer: on the title screen when there is a newer version, and on the General page that asked."""
+        if error or info is None:
+            self.update_answer = error or "No update repository is set in this version of the launcher."
+        elif not info["newer"]:
+            self.update_answer = f"You have the latest version ({VERSION})."
             self.page_state.set(f"Launcher up to date (version {VERSION}).")
-            if not quiet:
-                messagebox.showinfo("Updates", f"You have the latest version ({VERSION}).", parent=self.root)
-            return
-        self.page_state.set(f"New version available: {info['latest']}")
-        self.update_info = info
-        if self.job:
-            return
-        answer = messagebox.askyesnocancel("Update available",
-                                           f"Version {info['latest']} is available (you have {VERSION}).\n\n"
-                                           "Download it now? It is checked (SHA-256) and unpacked beside this one; then the new "
-                                           "launcher opens and offers to recompile your game. Your saves and this version stay "
-                                           "as they are.\n\nNo: open the release page instead.", parent=self.root)
-        if answer:
-            self.action(self.download_update)
-        elif answer is False:
-            webbrowser.open(info["url"])
+        else:
+            self.update_info, self.update_later = info, False
+            self.update_answer = f"Version {info['latest']} is available (you have {VERSION})."
+            self.page_state.set(self.update_answer)
+        rows = getattr(self.view, "rows", None)
+        if rows:
+            rows.sync()
+        elif self.active_page == "Home" and not self.job:
+            self.show("Home")
 
     def download_update(self):
         self.guard()
         info = self.update_info
         self.background(f"Downloading {info['latest']}…",
                         lambda: download_update(info, on_progress=lambda d, t: self.events.put(("progress", (d, t)))),
-                        self.update_ready, demo="DOWNLOADING UPDATE")
+                        self.update_ready, demo="DOWNLOADING UPDATE", retry=self.download_update)
 
     def update_ready(self, kit):
-        self.page_state.set(f"Version {self.update_info['latest']} is ready in {kit}.")
-        if messagebox.askyesno("Update ready", f"Version {self.update_info['latest']} is ready in:\n{kit}\n\n"
-                               "Open it now? This window closes.", parent=self.root):
-            launch_kit(kit)
-            self.root.destroy()
+        self.update_kit = kit
+        self.update_answer = f"Version {self.update_info['latest']} is ready in {kit}."
+        self.page_state.set(self.update_answer)
+        self.refresh()
+
+    def open_update(self):
+        self.guard()
+        launch_kit(self.update_kit)
+        self.close()
+
+    def update_notes(self):
+        notes = self.update_info["notes"].strip() or "The release has no notes."
+        show_text(self.root, f"What's new in {self.update_info['latest']}", f"{notes}\n\n{self.update_info['url']}")
+
+    def not_now(self):
+        self.update_later = True
+        self.refresh()
+
+    def card(self):
+        """What the title screen's card says, the most important first; nothing while a job or the game runs."""
+        if self.process or self.job:
+            return None
+        act = lambda f: (lambda: self.action(f))
+        if self.notice:
+            return self.notice
+        if self.update_kit and not self.update_later:
+            return Card(f"Version {self.update_info['latest']} is ready", "It opens in its own folder and offers to recompile your game. "
+                        "Your saves and this version stay as they are.", [("Open it", act(self.open_update)), ("Later", self.not_now)])
+        if self.update_info and not self.update_later:
+            return Card(f"Version {self.update_info['latest']} is available", f"You have {VERSION}. It is checked (SHA-256) and unpacked "
+                        "beside this one; nothing is replaced.",
+                        [("Update", act(self.download_update)), ("What's new", act(self.update_notes)), ("Later", self.not_now)])
+        old = self.old_game()
+        if old:
+            return Card("Your game can be updated", f"It was compiled by version {old}; this launcher is {VERSION}. Recompiling takes 20 to "
+                        "60 minutes, once. Your saves are kept.",
+                        [("Update the game", act(self.recompile_game)), ("Not now", act(self.keep_old_game))])
+        if self.game and not shader_preparation(self.game, self.profiles) and not self.profiles.data.get("shader_prep_declined"):
+            return Card("Shaders are not prepared", "The first session pauses for each new one. Preparing them all takes about 15 minutes, "
+                        "once.", [("Prepare now", act(self.prepare_shaders)), ("Not now", act(self.skip_shaders))])
+        return None
+
+    def skip_shaders(self):
+        self.profiles.update(shader_prep_declined=True)
+        self.refresh()
 
     def callback_error(self, error_type, error, stack):
         LOG.error("event=ui_error type=%s", error_type.__name__)
@@ -281,7 +345,6 @@ class Launcher:
         try:
             callback()
         except (OSError, LauncherError, subprocess.SubprocessError, tk.TclError) as error:
-            self.error_text = str(error)
             LOG.error("event=action_failed type=%s", type(error).__name__)
             self.copy_from(error)
             messagebox.showerror("Liftoff", str(error), parent=self.root)
@@ -325,6 +388,7 @@ class Launcher:
             self.root.bind_all(event, lambda e: self.scroll and self.scroll.wheel(e))
         self.root.bind_all("<FocusIn>", lambda e: self.scroll and self.scroll.reveal(e), add="+")
         self.root.bind("<Escape>", lambda _e: self.show("Home") if self.active_page != "Home" else None)
+        self.root.bind("<F11>", lambda _e: self.root.attributes("-fullscreen", not self.root.attributes("-fullscreen")))
         self.root.bind("<Control-Tab>", lambda _e: self.next_tab(1))
         self.root.bind("<Control-Shift-Tab>" if WINDOWS else "<Control-ISO_Left_Tab>", lambda _e: self.next_tab(-1))
 
@@ -399,36 +463,34 @@ class Launcher:
         label(self.page, subtitle, color=MUTED).pack(anchor="w", pady=(1, 14))
 
     def home(self):
-        """The title screen: its menu is the next steps for this installation's state, its chips the state itself."""
+        """The title screen: its menu holds places, its chips the state, its card what needs the player."""
         shaders = shader_preparation(self.game, self.profiles) if self.game else None
         busy = bool(self.process or self.job)
         act = lambda f: (lambda: self.action(f))
-        settings = ("SETTINGS", "Graphics, controls, launcher", lambda: self.show("Graphics"), True)
-        helpme = ("HELP", "Game files, report a problem, logs, about", lambda: self.show("Support"), True)
-        if not self.game:
+        places = [("SETTINGS", "Graphics, controls, general", lambda: self.show("Graphics"), True),
+                  ("PROFILES", "Saves and settings per player", lambda: self.show("Profiles"), True),
+                  ("HELP", "Game files, report a problem, logs, about", lambda: self.show("Support"), True),
+                  ("QUIT", "", self.close, True)]
+        if self.game:
+            menu = [("PLAY", "The game is running" if self.process else "Start the game · two players: plug in a second controller",
+                     act(self.play), not busy), *places]
+        else:
             menu = [("INSTALL ORBITALS", "From your own game files: about 20 to 60 minutes, once", act(self.install_game), not busy),
                     ("USE AN INSTALLATION", "A folder this launcher or the setup script already made", act(self.locate), not busy),
-                    settings, helpme]
-        else:
-            old = outdated_release(self.game)
-            menu = [("UPDATE THE GAME", f"From {old} to {VERSION}: 20 to 60 min, saves kept",
-                     act(self.recompile_game), not busy)] if old else []
-            menu.append(("PLAY", "The game is running" if self.process else "Start the game · two players: plug in a second controller",
-                         act(self.play), not busy))
-            if not shaders:
-                menu.append(("PREPARE SHADERS", "Recommended once, about 15 minutes: no pauses in the first session",
-                             act(self.prepare_shaders), not busy))
-            menu += [settings, ("PROFILES", "Saves and settings per player", lambda: self.show("Profiles"), True), helpme]
+                    places[0], *places[2:]]
+        outdated = bool(self.game and outdated_release(self.game))
+        files = lambda: self.show("Support")
         if self.game:
-            game_tag = ("GAME", "RUNNING" if self.process else ("OUTDATED" if outdated_release(self.game) else "READY"),
-                        PEACH if outdated_release(self.game) and not self.process else CYAN)
+            game_tag = ("GAME", "RUNNING" if self.process else ("OUTDATED" if outdated else "READY"),
+                        PEACH if outdated and not self.process else CYAN, files)
         else:
-            game_tag = ("GAME", "PROBLEM" if self.error_text else "NOT INSTALLED", PEACH)
+            game_tag = ("GAME", "PROBLEM" if self.notice else "NOT INSTALLED", PEACH, files)
         shader_tag = ("SHADERS", f"{shaders.get('validated', 0):,} READY".replace(",", " ") if shaders else "NOT PREPARED",
-                      CYAN if shaders else PEACH)
-        tags = [game_tag, shader_tag, ("PROFILE", self.profiles.profile["name"], RED)]
-        subtitle = self.error_text[:400] if self.error_text else "A cooperative adventure in space"
-        TitleScreen(self.page, menu, tags, subtitle=subtitle, still=lambda: self.process is not None,
+                      CYAN if shaders else PEACH, files)
+        tags = [game_tag, *((shader_tag,) if self.game else ()), ("PROFILE", self.profiles.profile["name"], RED, lambda: self.show("Profiles"))]
+        pads = (*self.pads_line(), lambda: self.show("Controls")) if self.pad_names is not None else None
+        TitleScreen(self.page, menu, tags, subtitle="A cooperative adventure in space", card=self.card(), pads=pads,
+                    footer=f"Arrows, Enter: choose  ·  F11: full screen  ·  v{VERSION}", still=lambda: self.process is not None,
                     animate=bool(self.profiles.data.get("animate", True))).pack(fill="both", expand=True)
 
     def locate(self):
@@ -441,7 +503,7 @@ class Launcher:
         try:
             detected = installation(detected.root)
         except (LauncherError, OSError):
-            self.error_text = "Build found. Prepare the ExeFS / RomFS data to enable Play."
+            self.fail("The game's data is missing", "Build found. Prepare the ExeFS / RomFS data to enable Play.")
             self.refresh()
             return
         self.set_game(detected)
@@ -449,7 +511,7 @@ class Launcher:
     def set_game(self, game):
         self.profiles.update(install=str(game.root))
         self.game = self.template = game
-        self.error_text = ""
+        self.notice = None
         self.page_state.set("Local installation checked")
         LOG.info("event=install_selected version_detected=%s", bool(game.version))
         self.refresh()
@@ -481,7 +543,7 @@ class Launcher:
             return
         self.background("Installing…", 
                         lambda: install_from_files(Path(path), on_progress=lambda s, n, t: self.events.put(("progress", (s, n, t)))),
-                        self.installed, demo="RECOMPILING ORBITALS")
+                        self.installed, demo="RECOMPILING ORBITALS", retry=self.install_game)
 
     def installed(self, game):
         self.set_game(game)
@@ -509,7 +571,8 @@ class Launcher:
         game, profiles = self.game, self.profiles
         self.background("Preparing shaders…", 
                         lambda: prepare_shaders(game, profiles, on_progress=lambda event: self.events.put(("progress", event))),
-                        lambda summary: self.shaders_prepared(summary, then), demo="PREPARING SHADERS")
+                        lambda summary: self.shaders_prepared(summary, then), demo="PREPARING SHADERS",
+                        retry=lambda: self.prepare_shaders(confirm=False, then=then))
 
     def shaders_prepared(self, summary, then=None):
         failed = summary.get("failed", 0)
@@ -519,8 +582,10 @@ class Launcher:
         if then:
             then()
 
-    def background(self, status, worker, complete, demo=None):
+    def background(self, status, worker, complete, demo=None, retry=None):
+        """One job at a time. A job with a demo is a long one: if it fails, the title screen says so and offers `retry`."""
         self.guard()
+        self.notice, self.retry = None, retry
         self.page_state.set(status)
         self.demo_title = demo; self.demo_state = (0.0, status.rstrip("…"), "")
         self.progress.configure(value=0)
@@ -550,18 +615,22 @@ class Launcher:
                 continue
             complete, self.job = self.job, None
             self.progress.pack_forget()
-            self.demo_title = None
-            if self.active_page == "Home":   # also after a job without a demo: its entries are enabled again
-                self.show("Home")
+            title, self.demo_title = self.demo_title, None
             if kind == "error":
-                self.error_text = str(value)
                 self.page_state.set("The operation failed.")
                 LOG.error("event=background_failed type=%s", type(value).__name__)
                 self.copy_from(value)
-                messagebox.showerror("Liftoff", self.error_text, parent=self.root)
-                self.refresh()
+                if title:
+                    self.fail(f"{title.capitalize()} failed", str(value), *((("Try again", self.retry),) if self.retry else ()),
+                              ("Open logs", lambda: open_folder(self.local / "logs")))
+                    self.show("Home")
+                else:
+                    self.refresh()   # (Home's entries are enabled again)
+                    messagebox.showerror("Liftoff", str(value), parent=self.root)
             else:
                 self.page_state.set("")
+                if self.active_page == "Home":   # also after a job without a demo: its entries are enabled again
+                    self.show("Home")
                 self.action(lambda: complete(value))
             return
         if isinstance(progress, dict):   # prepare_shaders: nxs_prepare.py's events
@@ -591,8 +660,6 @@ class Launcher:
         self.guard()
         if not self.game:
             raise LauncherError("Locate an installation.")
-        if outdated_release(self.game) and self.offer_recompile(asked_now=True):
-            return
         if (not shader_preparation(self.game, self.profiles) and not self.profiles.data.get("shader_prep_declined")):
             answer = messagebox.askyesnocancel("Prepare shaders", SHADER_PREP_TEXT + "\n\nPrepare them before playing? "
                                                "(No: play now and translate them during the session.)", parent=self.root)
@@ -602,7 +669,6 @@ class Launcher:
                 self.prepare_shaders(confirm=False, then=self.play)
                 return
             self.profiles.update(shader_prep_declined=True)
-        self.error_text = ""
         self.background("Starting Orbitals…", lambda: launch(self.game, self.profiles), self.started)
 
     def started(self, result):
@@ -620,10 +686,10 @@ class Launcher:
         self.process = self.run = None
         finish_session(run, code, self.profiles)
         self.page_state.set("Session finished." if code == 0 else f"Unexpected stop · code {code}")
-        self.error_text = "" if code == 0 else "Orbitals has stopped. The logs of this session are available."
+        if code:
+            self.fail("Orbitals stopped unexpectedly", f"Exit code {code}. The logs of this session are available for a report.",
+                      ("Report it", self.report), ("Open logs", lambda: open_folder(run)))
         self.refresh()
-        if code and messagebox.askyesno("Unexpected stop", "Prepare a report about this stop?", parent=self.root):
-            self.report()
 
     def profile_page(self):
         self.heading("Profiles", "Each profile has its own settings and save folder.")
@@ -640,7 +706,6 @@ class Launcher:
         def select():
             self.guard()
             self.profiles.select(names[selected.get()])
-            self.error_text = ""
             self.refresh()
 
         picker.bind("<<ComboboxSelected>>", lambda _: self.action(select))
@@ -671,7 +736,6 @@ class Launcher:
                                       initialvalue=self.profiles.profile["name"] if rename else "")
         if name is not None:
             (self.profiles.rename if rename else self.profiles.create)(name)
-            self.error_text = ""
             self.refresh()
 
     def archive_profile(self):
@@ -710,6 +774,8 @@ class Launcher:
         files = tk.Frame(self.page, bg=BG)   # what the title screen leaves out: the installation's own actions
         files.pack(fill="x", pady=(0, 13))
         label(files, "Game files", color=MUTED, size=9, bold=True).pack(side="left", padx=(0, 10))
+        if self.game and outdated_release(self.game):
+            self.button(files, "Update the game", self.recompile_game).pack(side="left", padx=(0, 6))
         if self.game:
             self.button(files, "Reinstall from my files", self.install_game).pack(side="left", padx=(0, 6))
         self.button(files, "Use another installation", self.locate).pack(side="left", padx=(0, 6))

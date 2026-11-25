@@ -45,8 +45,12 @@ on Linux.
    made by the setup or by BUILDING.md. **Prepare ExeFS / RomFS** then checks your extracted files against that build (NSO module ids,
    the IoStore containers, the SHA-256 of the `.utoc` tables when the build has them), checks the disk space and publishes the
    installation in one step.
-3. **Play**. *Ready to play* means the expected layout is there; the rendering itself depends on the build, its dependencies and the
+3. **Play**. *READY* means the expected layout is there; the rendering itself depends on the build, its dependencies and the
    GPU driver.
+
+The title screen's menu holds the pages. A card on its left says what needs you, one thing at a time: a failure with what can be done
+about it, a new version, a game compiled by an older one, shaders not prepared. The chips under it (game, shaders, profile) and the
+controllers' line lead to their pages. The arrow keys reach all of it, and F11 makes the window full screen.
 
 The first session translates the game's shaders while it runs: the picture can pause for a few seconds, mostly behind loading screens
 (KNOWN_ISSUES.md). Later sessions use the cache, which the launcher keeps per game build (seeded once from the game folder's own cache).

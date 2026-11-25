@@ -211,7 +211,9 @@ class GeneralPage(SettingsPage):
         rows.switch("Check for updates at start", lambda: bool(app.profiles.data.get("update_check", True)),
                     lambda v: app.profiles.update(update_check=v),
                     "One request to GitHub when the launcher starts. Nothing is downloaded until you accept it.", default=(True,))
-        rows.action("Latest release", "Check now", app.check_now, "Asks GitHub for the latest public release.")
+        rows.action("Latest release", lambda: "Update" if app.update_info else "Check now",
+                    lambda: app.download_update() if app.update_info else app.check_now(),
+                    lambda: app.update_answer or "Asks GitHub for the latest public release.")
         rows.action("All releases", "Open", lambda: webbrowser.open(RELEASES_URL), "The releases' page in your browser.")
         rows.group("Problem reports")
         rows.entry("GitHub issues page", lambda: app.profiles.data.get("issues", ""), self.set_issues,

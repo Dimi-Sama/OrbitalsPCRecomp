@@ -30,10 +30,9 @@ class LauncherWindowTest(unittest.TestCase):
         self.root = Path(tempfile.mkdtemp(prefix="orbitals-ui-"))
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
         self.addCleanup(self.tk.destroy)
-        # no network and no background work while the pages are built
+        # no network while the pages are built
         for name in ("check_update",):
-            if hasattr(core, name):
-                p = patch.object(core, name, return_value=None); p.start(); self.addCleanup(p.stop)
+            p = patch.object(ui, name, return_value=None); p.start(); self.addCleanup(p.stop)
 
     def build(self, game=None):
         local = self.root / "local"
@@ -86,10 +85,95 @@ class LauncherWindowTest(unittest.TestCase):
         done = []
         app.background("Copying…", lambda: time.sleep(0.2), done.append)
         self.spin(0.05)
-        self.assertFalse(self.title(app).menu[0][3], "PLAY while a job runs")
+        self.assertFalse(self.title(app).entries[0].enabled, "PLAY while a job runs")
+        self.assertIsNone(self.title(app).card)
         self.spin(0.8)
         self.assertTrue(done)
-        self.assertTrue(self.title(app).menu[0][3], "PLAY after it")
+        self.assertTrue(self.title(app).entries[0].enabled, "PLAY after it")
+
+    def test_chips_and_controllers_lead_to_their_pages(self):
+        app = self.window()
+        app.pad_names = ["Pad"]
+        app.show("Home")
+        for pick, page in ((lambda s: s.chips[0], "Support"), (lambda s: s.chips[2], "Profiles"), (lambda s: s.pads_spot, "Controls")):
+            app.show("Home"); self.spin(0.1)
+            screen = self.title(app)
+            with patch.object(page_settings, "gamepad_inventory", return_value=("XInput", [])):
+                screen.take(pick(screen))
+            self.assertEqual(app.active_page, page)
+
+    def test_the_controllers_line_comes_with_their_first_answer(self):
+        app = self.window()
+        app.pad_names = None
+        app.show("Home")
+        self.assertIsNone(self.title(app).pads_spot)
+        self.tk.after_cancel(app.pads_timer)
+        with patch.object(app.pads, "names", return_value=["Pad"]):
+            app.watch_pads()
+            self.assertEqual(self.title(app).pads[0], "Pad")
+
+    def test_the_arrows_reach_everything_on_the_title_screen(self):
+        app = self.window()
+        app.pad_names = ["Pad", "Other pad"]
+        app.show("Home"); self.spin(0.2)
+        screen = self.title(app)
+        self.assertEqual(screen.pads[0], "2 controllers: Pad, Other pad")
+        reached, todo = {screen.selected}, [screen.selected]
+        while todo:
+            start = todo.pop()
+            for x, y in ((0, -1), (0, 1), (-1, 0), (1, 0)):
+                screen.selected = start
+                screen.go(x, y)
+                if screen.selected not in reached:
+                    reached.add(screen.selected); todo.append(screen.selected)
+        self.assertEqual(reached, {spot for spot in screen.spots if spot.enabled})
+        screen.selected = screen.buttons[0]
+        screen.go(1, 0); self.assertIs(screen.selected, screen.buttons[1])
+
+    def test_cards_say_the_most_important_thing_once(self):
+        app = self.window()
+        self.assertEqual(app.card().title, "Shaders are not prepared")
+        with patch.object(ui, "outdated_release", return_value="0.1.0"):
+            self.assertEqual(app.card().title, "Your game can be updated")
+            app.keep_old_game()
+            self.assertEqual(app.card().title, "Shaders are not prepared")
+        app.show_update({"latest": "v9.0.0", "newer": True, "url": "https://github.com/x", "notes": "", "assets": {}}, None, True)
+        self.assertEqual(self.title(app).card.title, "Version v9.0.0 is available")
+        app.not_now()
+        self.assertEqual(app.card().title, "Shaders are not prepared")
+        app.skip_shaders()
+        self.assertIsNone(app.card())
+
+    def test_a_failed_long_job_is_a_card_with_its_retry(self):
+        app = self.window()
+        tried = []
+
+        def fails():
+            raise core.LauncherError("The disk is full.")
+
+        with patch.object(ui.messagebox, "showerror") as dialog:
+            app.background("Installing…", fails, None, demo="RECOMPILING ORBITALS", retry=lambda: tried.append(1))
+            self.spin(0.5)
+        dialog.assert_not_called()
+        card = self.title(app).card
+        self.assertTrue(card.alarm)
+        self.assertEqual((card.title, card.text), ("Recompiling orbitals failed", "The disk is full."))
+        self.assertEqual([label for label, _ in card.buttons], ["Try again", "Open logs", "Dismiss"])
+        card.buttons[0][1]()
+        self.assertEqual(tried, [1])
+        self.assertIsNone(app.notice)
+
+    def test_a_long_card_stays_above_the_chips(self):
+        app = self.window()
+        for size in ("880x650", "1160x755"):
+            self.tk.geometry(size)
+            app.fail("A failure with quite a long title that does not fit", "One long explanation of it. " * 30, ("Try again", lambda: None),
+                     ("Open logs", lambda: None))
+            app.show("Home"); self.spin(0.2)
+            screen = self.title(app)
+            self.assertLess(screen.card_box[3], screen.chips[0].box[1])
+            for spot in screen.buttons:
+                self.assertLess(spot.box[2], screen._split(spot.box[3]))
 
     def test_controller_scan_neither_blocks_saving_nor_loops_on_errors(self):
         app = self.window()
@@ -204,8 +288,18 @@ class LauncherWindowTest(unittest.TestCase):
                     left, top, right, bottom = screen.bbox(item)
                     self.assertLessEqual(right, screen.w, screen.itemcget(item, "text"))
                     self.assertLessEqual(bottom, screen.h, screen.itemcget(item, "text"))
-                    if left < screen.w * 0.4:
+                    if left < screen.w * 0.4 and "spots" not in screen.gettags(item):
                         self.assertLessEqual(right, screen._split((top + bottom) / 2) + 2, screen.itemcget(item, "text"))
+
+    def test_chips_stay_left_of_the_diagonal(self):
+        app = self.window("880x650")
+        app.profiles.rename("A profile name of 32 characters")
+        for game in (app.game, None):
+            app.game = game
+            app.show("Home"); self.spin(0.2)
+            screen = self.title(app)
+            for spot in screen.chips:
+                self.assertLess(spot.box[2], screen._split(spot.box[3]))
 
     def test_moving_the_mouse_repaints_nothing(self):
         app = self.window()
