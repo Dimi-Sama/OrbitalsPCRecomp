@@ -88,7 +88,7 @@ class ChoiceRow(Row):
 
     def take(self, value):
         if self.on and value != self.get():
-            self.set(value)
+            self.rows.app.action(lambda: self.set(value))
         self.rows.sync()
         return "break"
 

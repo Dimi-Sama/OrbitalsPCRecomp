@@ -91,7 +91,7 @@ Make `build\steamdeck-game\Orbitals_data\{exefs,romfs}` junctions to your game d
 
 ### On Linux
 
-Extract the Linux x86-64 release archive and open `Orbitals-Launcher.sh`. **Install from my files** uses the included Linux runtime
+Extract the Linux x86-64 release archive and open `Orbitals-Launcher.sh`. **GAME FILES → INSTALL** uses the included Linux runtime
 and recompiles the game module with GCC. Keep your ExeFS and RomFS in place. The installation links to them by default.
 
 On Debian or Ubuntu with Python 3.12 or later, install the launcher, compiler and graphics dependencies using your distribution's packages.

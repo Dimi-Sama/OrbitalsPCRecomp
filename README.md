@@ -45,7 +45,7 @@ All captured on an RTX 5070 Laptop at 1080p, except the character select (Steam 
 
 <table>
 <tr>
-<td width="50%"><img src="docs/images/launcher-title.png" alt="The launcher's title screen: PLAY, PREPARE SHADERS, SETTINGS, PROFILES, HELP"></td>
+<td width="50%"><img src="docs/images/launcher-title.png" alt="The launcher's title screen: PLAY, SETTINGS, PROFILES, GAME FILES, TOOLS, QUIT"></td>
 <td width="50%"><img src="docs/images/launcher-settings.png" alt="The launcher's settings, graphics tab"></td>
 </tr>
 <tr>
@@ -76,9 +76,9 @@ game data is linked, not copied); 16 GB of RAM; a Vulkan 1.3 GPU; an internet co
 1. Extract `OrbitalsPCRecomp-0.1.5-windows-x64.zip` from the [Releases page](https://github.com/Dimi-Sama/OrbitalsPCRecomp/releases)
    into an empty folder.
 2. Double-click **`Orbitals-Launcher.bat`** (it needs Python 3.12+ with Tk and offers to install it with winget if it is missing).
-3. **INSTALL ORBITALS** → choose the folder with `exefs/` and `romfs/`. The build tools are downloaded from their official servers,
+3. **SET UP ORBITALS** → choose the folder with `exefs/` and `romfs/`, then **INSTALL**. The build tools are downloaded from their official servers,
    each checked against a pinned SHA-256, into the folder; nothing is installed system-wide. Then your copy's code is recompiled.
-4. **PREPARE SHADERS** (recommended), then **PLAY**. Plug in a second controller for co-op.
+4. **Prepare now** on the card about the shaders (recommended), then **PLAY**. Plug in a second controller for co-op.
 
 Without the launcher:
 
@@ -160,7 +160,7 @@ layers, slow). The runtime writes everything it does to `Orbitals.log` beside th
 ## Reporting a problem
 
 Use the issue templates (graphics bug, crash, build problem, performance regression). Attach a report made with the launcher's
-**HELP → Create a report** (or `python -B tools/release/bugreport.py --game-dir games/Orbitals`): logs with local paths masked, system and
+**TOOLS → Report a problem** (or `python -B tools/release/bugreport.py --game-dir games/Orbitals`): logs with local paths masked, system and
 GPU information, settings. It never includes your saves or any game file. Please check its contents before posting.
 
 ## Contributing

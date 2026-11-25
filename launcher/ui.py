@@ -13,17 +13,20 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from . import VERSION
 from .core import (DEFAULT_SETTINGS, LOG, REPO, WINDOWS, LauncherError, Profiles, carry_saves, check_update, detect_installation,
                    download_update, finish_session, game_source, install_fraction, install_from_files, installation, json_bytes,
-                   latest_run, launch, launch_kit, outdated_release, prepare, prepare_shaders, runtime_info, shader_preparation,
-                   validate_settings)
+                   latest_run, launch, launch_kit, outdated_release, prepare_shaders, runtime_info, setup_log, shader_preparation,
+                   source_lacks, validate_settings)
 from .demo import DemoScreen
-from .look import BG, CYAN, MUTED, PANEL, PEACH, RAIL, RED, ScrollPage, label, px, surface, theme
+from .look import BG, CYAN, MUTED, PEACH, RED, ScrollPage, label, px, theme
 from .neo import Card, HeaderStrip, TitleScreen
 from .pads import Pads
+from .page_files import FilesPage
 from .page_settings import REMOVED, ControlsPage, GeneralPage, GraphicsPage
+from .page_tools import ProfilesPage, ToolsPage
 from .report_form import ReportForm, show_text
 from .reports import gpu_info, system_info
 from .rows import TextRow
 from .shader_text import SHADER_PREP_TEXT, shader_progress, shader_progress_text
+from .tasks import Pace, Stopped, Task, counted
 
 
 def open_folder(path):
@@ -35,16 +38,28 @@ def open_folder(path):
         subprocess.Popen(["xdg-open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def spoken(title, first=True):
+    """A demo's title ("RECOMPILING ORBITALS") in a sentence."""
+    title = title.lower().replace("orbitals", "Orbitals")
+    return title[0].upper() + title[1:] if first else title
+
+
 class Launcher:
+    version = VERSION
+    spoken = staticmethod(spoken)
+
     def __init__(self, root, local, selected=None):
         self.root = root
         self.local = local
         self.profiles = Profiles(local)
         self.game = None
-        self.template = None
         self.notice = None           # a Card the title screen shows until it is dismissed (a failure)
         self.update_info = self.update_kit = None; self.update_answer = ""; self.update_later = False
         self.retry = None            # what starts the running job again, if it fails
+        self.task, self.stoppable, self.pace = Task(), False, Pace()   # the running job's stop switch and time left (tasks.py)
+        self.install_step = None     # of the installation that runs
+        self.setup_open = self.closing = False
+        self.job_bar = None
         self.job = None
         self.process = None
         self.run = None
@@ -78,7 +93,6 @@ class Launcher:
                 self.fail("The installation was not opened", f"{error}\n{candidate}", ("Use another installation", self.locate))
         else:
             self.game = detect_installation()
-        self.template = self.game
         LOG.info("event=detect ready=%s", self.game is not None)
         self.pads = Pads([*((self.game.root,) if self.game else ()), REPO / "bin"])
         self.pad_names = None
@@ -207,6 +221,15 @@ class Launcher:
     def open_folder(path):
         open_folder(path)
 
+    @staticmethod
+    def open_file(path):
+        if not path.is_file():
+            raise LauncherError("There is no such file yet.")
+        if WINDOWS:
+            os.startfile(path)
+        else:
+            subprocess.Popen(["xdg-open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
     def focus_header(self):
         if self.header:
             self.header.focus_set()
@@ -216,6 +239,8 @@ class Launcher:
         rows = getattr(self.view, "rows", None)
         if rows and rows.selected:
             rows.selected.focus_set()
+        elif getattr(self.view, "first", None):
+            self.view.first.focus_set()
         elif self.header:
             self.header.tk_focusNext().focus_set()
 
@@ -243,6 +268,7 @@ class Launcher:
                 return
             source = Path(path)
         in_place = (REPO / "games" / "Orbitals").resolve() == old.root.resolve() if old else False
+        self.install_step = 1
 
         def done(game):
             try:
@@ -255,8 +281,8 @@ class Launcher:
 
         self.background("Recompiling…",
                         lambda: install_from_files(source, on_progress=lambda s, n, t: self.events.put(("progress", (s, n, t))),
-                                                   rebuild=in_place),
-                        done, demo="RECOMPILING ORBITALS", retry=self.recompile_game)
+                                                   rebuild=in_place, task=self.task),
+                        done, demo="RECOMPILING ORBITALS", retry=self.recompile_game, stoppable=True)
 
     def update_result(self, quiet=False):
         """Runs on a worker thread: asks GitHub for the latest release and hands the answer to the Tk thread."""
@@ -287,8 +313,8 @@ class Launcher:
         self.guard()
         info = self.update_info
         self.background(f"Downloading {info['latest']}…",
-                        lambda: download_update(info, on_progress=lambda d, t: self.events.put(("progress", (d, t)))),
-                        self.update_ready, demo="DOWNLOADING UPDATE", retry=self.download_update)
+                        lambda: download_update(info, on_progress=lambda d, t: self.events.put(("progress", (d, t))), task=self.task),
+                        self.update_ready, demo="DOWNLOADING UPDATE", retry=self.download_update, stoppable=True)
 
     def update_ready(self, kit):
         self.update_kit = kit
@@ -394,7 +420,8 @@ class Launcher:
 
     TABS = (("Graphics", "GRAPHICS"), ("Controls", "CONTROLS"), ("Settings", "GENERAL"))
     SETTINGS_PAGES = {"Graphics": GraphicsPage, "Controls": ControlsPage, "Settings": GeneralPage}
-    SUBSCREENS = {"Profiles": "PROFILES", "Support": "HELP"}
+    ROWS_PAGES = SETTINGS_PAGES | {"Profiles": ProfilesPage, "Tools": ToolsPage}
+    SUBSCREENS = {"Profiles": "PROFILES", "Files": "GAME FILES", "Tools": "TOOLS"}
 
     def next_tab(self, direction):
         names = [name for name, _ in self.TABS]
@@ -408,17 +435,17 @@ class Launcher:
             if isinstance(row, TextRow):
                 row.keep()
         self.active_page = name
-        self.scroll = self.header = self.view = self.side = None
+        self.scroll = self.header = self.view = self.side = self.job_bar = None
         for child in self.stage.winfo_children():
             child.destroy()
         self.demo = None
         if name != "Home":   # a sub-screen: the title screen's header strip, its tabs, then the page itself
-            settings = name in self.SETTINGS_PAGES
+            settings, rows = name in self.SETTINGS_PAGES, name in self.ROWS_PAGES
             self.header = HeaderStrip(self.stage, "SETTINGS" if settings else self.SUBSCREENS[name], self.TABS if settings else (), name,
                                       on_tab=self.show, on_back=lambda: self.show("Home"), on_down=self.focus_page)
             self.header.pack(fill="x")
-            if settings:   # rows on the left, what the selected one does on the right
-                self.note_bar = tk.Frame(self.stage, bg=BG)
+            if rows:   # rows on the left, what the selected one does on the right
+                self.note_bar = tk.Frame(self.stage, bg=BG, height=px(1))
                 self.note_bar.pack(fill="x", padx=px(34), pady=(px(12), 0))
                 body = tk.Frame(self.stage, bg=BG)
                 body.pack(fill="both", expand=True, padx=(px(34), px(20)), pady=(px(6), 0))
@@ -428,23 +455,21 @@ class Launcher:
             else:
                 body = self.stage
             self.scroll = ScrollPage(body)
-            self.scroll.pack(side="left" if settings else "top", fill="both", expand=True,
-                             padx=0 if settings else (px(34), px(20)), pady=0 if settings else (px(14), 0))
+            self.scroll.pack(side="left" if rows else "top", fill="both", expand=True,
+                             padx=0 if rows else (px(34), px(20)), pady=0 if rows else (px(16), 0))
             self.page = self.scroll.body
-            if settings:
-                self.view = self.SETTINGS_PAGES[name](self)
-                return
             self.header.focus_set()
-        else:
-            self.page = tk.Frame(self.stage, bg=BG)
-            self.page.pack(fill="both", expand=True)
-        if name == "Home" and self.job and self.demo_title:   # a long task: its demo screen, fed by poll_job
+            self.view = (self.ROWS_PAGES[name] if rows else FilesPage)(self)
+            return
+        self.page = tk.Frame(self.stage, bg=BG)
+        self.page.pack(fill="both", expand=True)
+        if self.job and self.demo_title:   # a long task: its demo screen, fed by poll_job
+            self.build_job_bar()
             self.demo = DemoScreen(self.page, title=self.demo_title)
             self.demo.pack(fill="both", expand=True)
             self.demo.set_progress(*self.demo_state)
-            label(self.page, "You can keep using the other pages; this screen comes back on Home.", color=MUTED, size=9).pack(anchor="w", pady=(8, 0))
-            return
-        getattr(self, {"Home": "home", "Profiles": "profile_page", "Support": "support_page"}[name])()
+        else:
+            self.home()
 
     def refresh(self):
         """The page again, as the state is now; on a page of rows, where the player was."""
@@ -458,28 +483,35 @@ class Launcher:
         self.view.rows.choose(chosen)
         self.scroll.view.yview_moveto(place)
 
-    def heading(self, title, subtitle):
-        label(self.page, title, size=23, bold=True, font_family=self.heading_font).pack(anchor="w")
-        label(self.page, subtitle, color=MUTED).pack(anchor="w", pady=(1, 14))
+    def build_job_bar(self):
+        """Under a long task's demo: its time, the other pages, and Stop."""
+        bar = tk.Frame(self.page, bg=BG)
+        bar.pack(side="bottom", fill="x", padx=px(18), pady=(px(8), 0))
+        stop = self.button(bar, "Stopping…" if self.task.stopped else "Stop", self.stop_job)
+        stop.pack(side="right")
+        if not self.stoppable or self.task.stopped:
+            stop.state(["disabled"])
+        for title, page in (("Tools", "Tools"), ("Settings", "Graphics"), ("Game files", "Files")):
+            self.button(bar, title, lambda page=page: self.show(page)).pack(side="right", padx=(0, px(8)))
+        self.job_bar = label(bar, self.pace.text(), color=MUTED)
+        self.job_bar.pack(side="left")
+        stop.focus_set()
 
     def home(self):
         """The title screen: its menu holds places, its chips the state, its card what needs the player."""
         shaders = shader_preparation(self.game, self.profiles) if self.game else None
         busy = bool(self.process or self.job)
-        act = lambda f: (lambda: self.action(f))
-        places = [("SETTINGS", "Graphics, controls, general", lambda: self.show("Graphics"), True),
-                  ("PROFILES", "Saves and settings per player", lambda: self.show("Profiles"), True),
-                  ("HELP", "Game files, report a problem, logs, about", lambda: self.show("Support"), True),
-                  ("QUIT", "", self.close, True)]
+        go = lambda page: (lambda: self.show(page))
+        files = go("Files")
+        settings, tools = ("SETTINGS", "Graphics, controls, general", go("Graphics"), True), ("TOOLS", "Steam, updates, reports, logs", go("Tools"), True)
         if self.game:
             menu = [("PLAY", "The game is running" if self.process else "Start the game · two players: plug in a second controller",
-                     act(self.play), not busy), *places]
+                     lambda: self.action(self.play), not busy), settings, ("PROFILES", "Saves and settings per player", go("Profiles"), True),
+                    ("GAME FILES", "What is installed, shaders", files, True), tools]
         else:
-            menu = [("INSTALL ORBITALS", "From your own game files: about 20 to 60 minutes, once", act(self.install_game), not busy),
-                    ("USE AN INSTALLATION", "A folder this launcher or the setup script already made", act(self.locate), not busy),
-                    places[0], *places[2:]]
+            menu = [("SET UP ORBITALS", "From your own copy: about 20 to 60 minutes, once", files, True), settings, tools]
+        menu.append(("QUIT", "", self.close, True))
         outdated = bool(self.game and outdated_release(self.game))
-        files = lambda: self.show("Support")
         if self.game:
             game_tag = ("GAME", "RUNNING" if self.process else ("OUTDATED" if outdated else "READY"),
                         PEACH if outdated and not self.process else CYAN, files)
@@ -496,61 +528,48 @@ class Launcher:
     def locate(self):
         self.guard()
         path = filedialog.askdirectory(parent=self.root, title="Folder with the native Orbitals build")
-        if not path:
-            return
-        detected = installation(Path(path), template=True)
-        self.template = detected
-        try:
-            detected = installation(detected.root)
-        except (LauncherError, OSError):
-            self.fail("The game's data is missing", "Build found. Prepare the ExeFS / RomFS data to enable Play.")
-            self.refresh()
-            return
-        self.set_game(detected)
+        if path:
+            self.set_game(installation(Path(path)))
 
     def set_game(self, game):
         self.profiles.update(install=str(game.root))
-        self.game = self.template = game
+        self.game = game
         self.notice = None
         self.page_state.set("Local installation checked")
         LOG.info("event=install_selected version_detected=%s", bool(game.version))
         self.refresh()
 
-    def prepare_game(self):
-        self.guard()
-        if self.template is None:
-            raise LauncherError("First locate a native build with its compiled ExeFS.")
-        path = filedialog.askdirectory(parent=self.root, title="Extracted folder with exefs and romfs")
-        if not path:
-            return
-        template = self.template
-        self.background("Preparing the data…", 
-                        lambda: prepare(Path(path), template, self.local / "installs",
-                                        lambda done, total: self.events.put(("progress", (done, total)))),
-                        self.set_game, demo="PREPARING GAME DATA")
+    def source(self):
+        """The folder of the player's copy: the one chosen, else the one the installation was made from."""
+        chosen = self.profiles.data.get("source")
+        return Path(chosen) if chosen else (game_source(self.game) if self.game else None)
 
-    def install_game(self):
-        """Recompile the selected ExeFS and prepare a playable installation."""
+    def set_source(self, path):
+        """A folder chosen as the copy; its only folder that is one, when it holds that instead."""
+        path = Path(path)
+        if source_lacks(path):
+            inside = [child for child in path.iterdir() if child.is_dir() and not source_lacks(child)]
+            if len(inside) == 1:
+                path = inside[0]
+        self.profiles.update(source=str(path))
+
+    def start_install(self):
+        """Recompile the chosen copy and prepare a playable installation."""
         self.guard()
-        path = filedialog.askdirectory(parent=self.root, title="Folder extracted from your copy (with exefs and romfs)")
-        if not path:
-            return
-        tools = ("Windows setup downloads the build tools from their official servers and checks their SHA-256."
-                 if WINDOWS else "Linux setup uses GCC, SPIRV-Tools and the .NET 10 runtime installed on this PC. See BUILDING.md for the dependencies.")
-        if not messagebox.askokcancel("Install Orbitals", f"{tools}\n\n"
-                "Installation recompiles your copy locally. Allow 20 to 60 minutes and keep the selected game folder in place. "
-                "The installation links to its ExeFS and RomFS.\n\nContinue?", parent=self.root):
-            return
-        self.background("Installing…", 
-                        lambda: install_from_files(Path(path), on_progress=lambda s, n, t: self.events.put(("progress", (s, n, t)))),
-                        self.installed, demo="RECOMPILING ORBITALS", retry=self.install_game)
+        source = self.source()
+        if source is None:
+            raise LauncherError("Choose the folder extracted from your copy first.")
+        self.install_step = 1
+        self.background("Installing…",
+                        lambda: install_from_files(source, on_progress=lambda s, n, t: self.events.put(("progress", (s, n, t))), task=self.task),
+                        self.installed, demo="RECOMPILING ORBITALS", retry=self.start_install, stoppable=True)
 
     def installed(self, game):
         self.set_game(game)
+        self.setup_open = False
         self.page_state.set("Installation finished: Orbitals is ready to play.")
-        if messagebox.askyesno("Liftoff", "Installation finished.\n\n" + SHADER_PREP_TEXT + "\n\nPrepare the shaders now?",
-                               parent=self.root):
-            self.prepare_shaders(confirm=False)
+        if self.active_page == "Files":
+            self.show("Home")   # (its card offers to prepare the shaders)
 
     def shader_state_text(self):
         info = shader_preparation(self.game, self.profiles) if self.game else None
@@ -570,22 +589,24 @@ class Launcher:
             return
         game, profiles = self.game, self.profiles
         self.background("Preparing shaders…", 
-                        lambda: prepare_shaders(game, profiles, on_progress=lambda event: self.events.put(("progress", event))),
+                        lambda: prepare_shaders(game, profiles, on_progress=lambda event: self.events.put(("progress", event)), task=self.task),
                         lambda summary: self.shaders_prepared(summary, then), demo="PREPARING SHADERS",
-                        retry=lambda: self.prepare_shaders(confirm=False, then=then))
+                        retry=lambda: self.prepare_shaders(confirm=False, then=then), stoppable=True)
 
     def shaders_prepared(self, summary, then=None):
         failed = summary.get("failed", 0)
         self.page_state.set(f"Shaders prepared: {summary.get('validated', 0):,} validated, {failed} not supported."
                             .replace(",", " "))
         self.refresh()
-        if then:
+        if then and not self.closing:
             then()
 
-    def background(self, status, worker, complete, demo=None, retry=None):
-        """One job at a time. A job with a demo is a long one: if it fails, the title screen says so and offers `retry`."""
+    def background(self, status, worker, complete, demo=None, retry=None, stoppable=False):
+        """One job at a time. A job with a demo is a long one: if it fails, the title screen says so and offers `retry`. A stoppable
+        one runs under self.task, made here."""
         self.guard()
         self.notice, self.retry = None, retry
+        self.task, self.stoppable, self.pace = Task(), stoppable, Pace()
         self.page_state.set(status)
         self.demo_title = demo; self.demo_state = (0.0, status.rstrip("…"), "")
         self.progress.configure(value=0)
@@ -616,44 +637,69 @@ class Launcher:
             complete, self.job = self.job, None
             self.progress.pack_forget()
             title, self.demo_title = self.demo_title, None
-            if kind == "error":
+            self.install_step = None
+            if kind == "error" and isinstance(value, Stopped):
+                LOG.info("event=background_stopped")
+                self.check_game()
+                self.page_state.set(str(value))
+                if self.closing:
+                    self.root.destroy()
+                    return
+                self.refresh()
+            elif kind == "error":
                 self.page_state.set("The operation failed.")
                 LOG.error("event=background_failed type=%s", type(value).__name__)
+                if self.closing:
+                    self.root.destroy()
+                    return
                 self.copy_from(value)
                 if title:
-                    self.fail(f"{title.capitalize()} failed", str(value), *((("Try again", self.retry),) if self.retry else ()),
+                    log = setup_log() if "RECOMPIL" in title else None
+                    self.fail(f"{spoken(title)} failed", str(value), *((("Try again", self.retry),) if self.retry else ()),
+                              ("Open log", lambda: self.open_file(log)) if log and log.is_file() else
                               ("Open logs", lambda: open_folder(self.local / "logs")))
-                    self.show("Home")
+                    self.show("Files" if self.active_page == "Files" else "Home")
                 else:
                     self.refresh()   # (Home's entries are enabled again)
                     messagebox.showerror("Liftoff", str(value), parent=self.root)
             else:
                 self.page_state.set("")
-                if self.active_page == "Home":   # also after a job without a demo: its entries are enabled again
-                    self.show("Home")
+                if self.closing:   # it ended before it could be stopped: what it made is kept
+                    self.action(lambda: complete(value))
+                    self.root.destroy()
+                    return
+                self.refresh()   # also after a job without a demo: what it disabled is enabled again
                 self.action(lambda: complete(value))
             return
         if isinstance(progress, dict):   # prepare_shaders: nxs_prepare.py's events
             value = shader_progress(progress); text = shader_progress_text(progress)
+            if progress.get("phase") == "translate" and progress.get("todo"):
+                self.pace.feed(progress.get("translated", 0) + progress.get("failed", 0), progress["todo"])
             self.progress.configure(value=value)
             self.page_state.set(text[:150])
             self.demo_state = (value / 100, "Preparing shaders", text[:120])
         elif progress and len(progress) == 3:   # install_from_files: step, steps, last line
             step, total, text = progress
+            self.install_step = max(1, step)
+            if counted(text):
+                self.pace.feed(*counted(text))
             value = max(self.demo_state[0] * 100 if self.demo_title else 0, 100 * install_fraction(step, total, text))   # never backwards
             self.progress.configure(value=value)
             self.page_state.set(f"Installation · step {step}/{total} · {text}"[:150])
             self.demo_state = (value / 100, f"Step {step}/{total}", str(text)[:120])
         elif progress:
             done, total = progress
+            self.pace.feed(done, total)
             self.progress.configure(value=100 * done / max(1, total))
-            self.page_state.set(f"Preparing · {done / 2**30:.2f} / {total / 2**30:.2f} GiB")
-            self.demo_state = (done / max(1, total), "Preparing game data", f"{done / 2**30:.2f} / {total / 2**30:.2f} GiB")
-        if progress is not None and self.demo is not None:
-            try:
+            self.page_state.set(f"Downloading · {done / 2**20:.0f} / {total / 2**20:.0f} MB")
+            self.demo_state = (done / max(1, total), "Downloading", f"{done / 2**20:.0f} / {total / 2**20:.0f} MB")
+        if self.demo_title:
+            if self.demo is not None and progress is not None:
                 self.demo.set_progress(*self.demo_state)
-            except tk.TclError:
-                self.demo = None
+            if self.job_bar is not None:
+                self.job_bar.configure(text="Stopping at the end of this step…" if self.task.stopped else self.pace.text())
+            if isinstance(self.view, FilesPage):
+                self.view.progress()
         self.root.after(90, self.poll_job)
 
     def play(self):
@@ -691,118 +737,25 @@ class Launcher:
                       ("Report it", self.report), ("Open logs", lambda: open_folder(run)))
         self.refresh()
 
-    def profile_page(self):
-        self.heading("Profiles", "Each profile has its own settings and save folder.")
-        card = surface(self.page)
-        card.pack(fill="x", pady=(0, 14))
-        rows = tk.Frame(card, bg=PANEL)
-        rows.pack(fill="x", padx=14, pady=12)
-        names = {item["name"]: key for key, item in self.profiles.entries.items()}
-        selected = tk.StringVar(value=self.profiles.profile["name"])
-        label(rows, "Active profile", bg=PANEL, bold=True).pack(side="left", padx=(0, 12))
-        picker = ttk.Combobox(rows, textvariable=selected, values=tuple(names), state="readonly", width=19)
-        picker.pack(side="left", padx=(0, 10))
-
-        def select():
-            self.guard()
-            self.profiles.select(names[selected.get()])
+    def stop_job(self):
+        """Stop the long job that runs; what it made so far is kept, and starting it again continues."""
+        if not (self.job and self.stoppable) or self.task.stopped:
+            return
+        if messagebox.askyesno("Stop", f"Stop {spoken(self.demo_title, False)}? What is done is kept: starting it again continues from there.",
+                               parent=self.root) and self.job:
+            self.task.stop()
+            self.page_state.set("Stopping…")
             self.refresh()
 
-        picker.bind("<<ComboboxSelected>>", lambda _: self.action(select))
-        self.button(rows, "Create", lambda: self.name_profile(False)).pack(side="left", padx=(0, 6))
-        self.button(rows, "Rename", lambda: self.name_profile(True)).pack(side="left", padx=(0, 6))
-        self.button(rows, "Delete…", self.archive_profile).pack(side="left")
-        label(self.page, "Saves", bold=True, size=15).pack(anchor="w", pady=(8, 5))
-        for title, help_text, button, callback in (
-            ("Active folder", "Files saved by the recomp.", "Open", lambda: open_folder(self.profiles.saves)),
-            ("Backup copy", "A timestamped copy in the active profile.", "Create a copy",
-             lambda: self.save_operation(self.profiles.backup)),
-            ("Import or restore", "Select a save folder or a copy made by the launcher.",
-             "Choose a folder", self.restore),
-            ("Export", "Copy the profile files to another folder.", "Export", self.export),
-        ):
-            row = surface(self.page, RAIL)
-            row.pack(fill="x", pady=(0, 7))
-            self.button(row, button, callback).pack(side="right", padx=11, pady=7)
-            labels = tk.Frame(row, bg=RAIL)
-            labels.pack(fill="x", padx=12, pady=7)
-            label(labels, title, bg=RAIL, bold=True).pack(anchor="w")
-            label(labels, help_text, bg=RAIL, color=MUTED, size=9, wraplength=402).pack(anchor="w")
-
-    def name_profile(self, rename):
-        self.guard()
-        label_text = "Rename the profile" if rename else "New profile"
-        name = simpledialog.askstring(label_text, "Name", parent=self.root,
-                                      initialvalue=self.profiles.profile["name"] if rename else "")
-        if name is not None:
-            (self.profiles.rename if rename else self.profiles.create)(name)
-            self.refresh()
-
-    def archive_profile(self):
-        self.guard()
-        if messagebox.askyesno("Delete the profile", "Remove this profile from the list and archive its files?",
-                               parent=self.root):
-            self.profiles.archive()
-            self.refresh()
-
-    def save_operation(self, operation):
-        self.background("Copying the saves…", operation,
-                        lambda path: self.page_state.set(f"Copy finished · {path.name}"))
-
-    def restore(self):
-        self.guard()
-        path = filedialog.askdirectory(parent=self.root, title="Folder to import into the active profile")
-        if path and messagebox.askyesno("Restore the save",
-                                        "Replace the active files after keeping a copy of them?",
-                                        parent=self.root):
-            self.save_operation(lambda: self.profiles.restore(Path(path)))
-
-    def export(self):
-        self.guard()
-        path = filedialog.askdirectory(parent=self.root, title="Destination folder")
-        if path:
-            self.save_operation(lambda: self.profiles.export(Path(path)))
-
-    def support_page(self):
-        self.heading("Support", "Read the logs or prepare a diagnostic report.")
-        panel = surface(self.page)
-        panel.pack(fill="x", pady=(0, 13))
-        label(panel, "Report a problem", bg=PANEL, size=17, bold=True).pack(anchor="w", padx=15, pady=(12, 3))
-        label(panel, "Create a local ZIP to check before attaching it to a GitHub issue.", color=MUTED,
-              bg=PANEL, wraplength=500).pack(anchor="w", padx=15)
-        self.button(panel, "Create a report", self.report, style="Play.TButton").pack(anchor="w", padx=15, pady=13)
-        files = tk.Frame(self.page, bg=BG)   # what the title screen leaves out: the installation's own actions
-        files.pack(fill="x", pady=(0, 13))
-        label(files, "Game files", color=MUTED, size=9, bold=True).pack(side="left", padx=(0, 10))
-        if self.game and outdated_release(self.game):
-            self.button(files, "Update the game", self.recompile_game).pack(side="left", padx=(0, 6))
+    def check_game(self):
+        """After a stop: is the installation still whole? An update stopped while it was being written has to be started again."""
         if self.game:
-            self.button(files, "Reinstall from my files", self.install_game).pack(side="left", padx=(0, 6))
-        self.button(files, "Use another installation", self.locate).pack(side="left", padx=(0, 6))
-        if self.game:
-            self.button(files, "Open the game folder", lambda: open_folder(self.game.root)).pack(side="left", padx=(0, 6))
-            self.button(files, "Prepare shaders again", self.prepare_shaders).pack(side="left")
-        detected = runtime_info((latest_run(self.profiles), self.game.root if self.game else None)) if self.game else None
-        about = surface(self.page)   # the technical details the Home page no longer shows
-        about.pack(fill="x", pady=(0, 13))
-        label(about, "About this installation", bg=PANEL, bold=True).pack(anchor="w", padx=15, pady=(10, 2))
-        lines = [f"Launcher {VERSION}"]
-        if self.game:
-            lines.append("Game build " + self.game.ids["main"][:16] + (f" ({self.game.version})" if self.game.version else ""))
-            lines.append(str(self.game.root))
-        if detected:
-            lines.append("Runtime " + " ".join(filter(None, (detected.get("release"), detected.get("commit")))) if detected.get("release")
-                         else "Recomp " + detected.get("recomp_version", "?"))
-        label(about, "\n".join(lines), bg=PANEL, color=MUTED, size=9).pack(anchor="w", padx=15, pady=(0, 10))
-        # (prepare_game: another copy of the same game version paired with a build already recompiled here, a development
-        # shortcut: not shown to players, "Install Orbitals" does the whole thing)
-        for title, callback in (("Last session", lambda: open_folder(
-                latest_run(self.profiles) or (self.game.root if self.game else self.local / "logs"))),
-                ("Launcher logs", lambda: open_folder(self.local / "logs")),
-                ("Saves", lambda: open_folder(self.profiles.saves)),
-                ("Reports folder", self.open_reports),
-                ("Issues GitHub", self.issues), ("System information", self.inspect_system)):
-            self.button(self.page, title, callback).pack(anchor="w", pady=(0, 5))
+            try:
+                self.game = installation(self.game.root)
+            except (OSError, LauncherError) as error:
+                self.game = None
+                self.fail("The game is not complete", f"{error} Set it up again: it continues from where it stopped.",
+                          ("Game files", lambda: self.show("Files")))
 
     def open_reports(self):
         directory = self.local / "reports"
@@ -827,6 +780,14 @@ class Launcher:
         ReportForm(self)
 
     def close(self):
+        if self.job and self.stoppable and not self.process:
+            if messagebox.askyesno("Close", f"Stop {spoken(self.demo_title, False)} and close? What is done is kept.", parent=self.root) and self.job:
+                self.closing = True
+                self.task.stop()
+                self.page_state.set("Stopping, then closing…")
+            elif not self.job:
+                self.close()
+            return
         if self.job or self.process:
             messagebox.showinfo("Liftoff", "Close the game first or wait for the operation to finish.",
                                 parent=self.root)

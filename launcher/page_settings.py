@@ -2,10 +2,9 @@
 """The settings pages: graphics, controls and general. A change is saved as it is made (Launcher.keep) and applies at the next launch."""
 
 import re
-import webbrowser
 
 from . import graphics
-from .core import DEFAULT_SETTINGS, LOG, RELEASES_URL, WINDOWS, LauncherError, gamepad_inventory, graphics_settings
+from .core import DEFAULT_SETTINGS, LOG, WINDOWS, LauncherError, gamepad_inventory, graphics_settings
 from .look import native_size
 from .neo import motion_allowed
 from .rows import Rows
@@ -205,19 +204,13 @@ class GeneralPage(SettingsPage):
         rows.switch("Title screen animation", lambda: bool(app.profiles.data.get("animate", True)), lambda v: app.profiles.update(animate=v),
                     lambda: "The stars of the title screen. They never move while the game runs."
                     + ("" if motion_allowed() else "\n\nYour system's animations are off, so they stay still."), default=(True,))
-        rows.action("Launcher folder", "Open", lambda: app.open_folder(app.local), "Profiles, saves, shader cache, logs and reports: "
-                    f"{app.local}")
         rows.group("Updates")
         rows.switch("Check for updates at start", lambda: bool(app.profiles.data.get("update_check", True)),
                     lambda v: app.profiles.update(update_check=v),
                     "One request to GitHub when the launcher starts. Nothing is downloaded until you accept it.", default=(True,))
-        rows.action("Latest release", lambda: "Update" if app.update_info else "Check now",
-                    lambda: app.download_update() if app.update_info else app.check_now(),
-                    lambda: app.update_answer or "Asks GitHub for the latest public release.")
-        rows.action("All releases", "Open", lambda: webbrowser.open(RELEASES_URL), "The releases' page in your browser.")
         rows.group("Problem reports")
         rows.entry("GitHub issues page", lambda: app.profiles.data.get("issues", ""), self.set_issues,
-                   "Where HELP's GitHub issues button goes. Reports are never sent by the launcher.")
+                   "Where TOOLS' GitHub issues goes. Reports are never sent by the launcher.")
 
     def set_issues(self, text):
         url = text.rstrip("/")

@@ -23,6 +23,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from . import VERSION, graphics
+from .tasks import Stopped, Task
 
 REPO = Path(__file__).resolve().parent.parent
 WINDOWS = os.name == "nt"
@@ -656,12 +657,24 @@ def shader_preparation(game, profiles):
     return info if isinstance(info, dict) and info.get("discovered") else None
 
 
-def linux_shader_deps(profiles, tools, env, on_progress=lambda event: None):
+def run_tool(task, args, timeout, env):
+    """subprocess.run with its output, under a task that can stop it and what it starts."""
+    with task.process(args, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL) as process:
+        try:
+            out, err = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            task.tree.end()
+            raise
+    task.check("The shader preparation was stopped.")
+    return subprocess.CompletedProcess(args, process.returncode, out, err)
+
+
+def linux_shader_deps(profiles, tools, env, on_progress=lambda event: None, task=None):
     """Linux (SteamOS included): the .NET runtime, SPIRV-Tools and a C++ compiler for the decoder in the launcher's private folder
     (tools/nxshader/nxs_deps.py: official downloads checked by digest, nothing installed on the system; kept for later runs, which are
     then offline). Returns env with them and the compiler path."""
-    result = subprocess.run([sys.executable, "-B", str(tools / "nxs_deps.py"), "--dest", str(profiles.root / "tools" / "shader-deps")],
-                            env=env, capture_output=True, text=True, timeout=3600)
+    result = run_tool(task or Task(), [sys.executable, "-B", str(tools / "nxs_deps.py"), "--dest", str(profiles.root / "tools" / "shader-deps")],
+                      3600, env)
     ready = None
     for line in result.stdout.splitlines():
         if line.startswith("{"):
@@ -679,7 +692,7 @@ def linux_shader_deps(profiles, tools, env, on_progress=lambda event: None):
     return env, ready["cxx"]
 
 
-def shader_decoder(profiles, tools, env, on_progress=lambda event: None, cxx=None):
+def shader_decoder(profiles, tools, env, on_progress=lambda event: None, cxx=None, task=None):
     """The Kraken decoder for the game's shader archives, built once on this PC from ooz's source (tools/nxshader/nxs_kraken.py)."""
     folder = profiles.root / "tools" / "kraken"
     library = folder / ("ooz_kraken.dll" if WINDOWS else "libooz_kraken.so")
@@ -691,8 +704,8 @@ def shader_decoder(profiles, tools, env, on_progress=lambda event: None, cxx=Non
             if (gcc / "x86_64-w64-mingw32-g++.exe").is_file():
                 env = dict(env, PATH=str(gcc) + os.pathsep + env.get("PATH", ""))
                 break
-    result = subprocess.run([sys.executable, "-B", str(tools / "nxs_kraken.py"), "--out", str(folder), *(["--cxx", str(cxx)] if cxx else [])],
-                            env=env, capture_output=True, text=True, timeout=600)
+    result = run_tool(task or Task(), [sys.executable, "-B", str(tools / "nxs_kraken.py"), "--out", str(folder),
+                                       *(["--cxx", str(cxx)] if cxx else [])], 600, env)
     lines = [line for line in result.stdout.splitlines() if line.startswith("{")]
     event = json.loads(lines[-1]) if lines else {}
     if result.returncode or event.get("phase") != "built" or not library.is_file():
@@ -701,16 +714,18 @@ def shader_decoder(profiles, tools, env, on_progress=lambda event: None, cxx=Non
     return library
 
 
-def prepare_shaders(game, profiles, on_progress=lambda event: None):
-    """Translate every shader of this build's game files into its shader cache. Returns the final summary (nxs_prepare.py "done")."""
+def prepare_shaders(game, profiles, on_progress=lambda event: None, task=None):
+    """Translate every shader of this build's game files into its shader cache. Returns the final summary (nxs_prepare.py "done").
+    Stopping `task` keeps what is translated: nxs_prepare.py does the rest the next time."""
+    task = task or Task()
     tools = shader_tools(game)
     if tools is None:
         raise LauncherError("The shader translator (nxshader) is missing from this installation.")
     env = add_shader_toolchain(game, {key: value for key, value in os.environ.items() if not key.startswith(("SWR_", "NXRT_"))})
     cxx = None
     if not WINDOWS:
-        env, cxx = linux_shader_deps(profiles, tools, env, on_progress)
-    decoder = shader_decoder(profiles, tools, env, on_progress, cxx)
+        env, cxx = linux_shader_deps(profiles, tools, env, on_progress, task)
+    decoder = shader_decoder(profiles, tools, env, on_progress, cxx, task)
     dotnet = Path(env["DOTNET_ROOT"]) / ("dotnet.exe" if WINDOWS else "dotnet") if env.get("DOTNET_ROOT") else Path("dotnet")
     cache = shader_cache_root(game, profiles)
     cache.mkdir(parents=True, exist_ok=True)
@@ -719,8 +734,7 @@ def prepare_shaders(game, profiles, on_progress=lambda event: None):
     LOG.info("event=shader_preparation_started")
     last = {}
     started = time.monotonic()
-    with subprocess.Popen(args, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL,
-                          creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0) as process:   # the launcher has no console: no window per tool
+    with task.process(args, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL) as process:
         for line in process.stdout:
             if not line.startswith("{"):
                 continue
@@ -730,10 +744,16 @@ def prepare_shaders(game, profiles, on_progress=lambda event: None):
                 continue
             last = event
             on_progress(event)
+            if event.get("phase") == "translate" and event.get("discovered"):   # all translated: publishing them is not cut short
+                task.hold(sum(event.get(part, 0) for part in ("cached", "translated", "failed")) >= event["discovered"])
             if time.monotonic() - started > SHADER_PREP_TIMEOUT:
-                process.kill()
+                task.tree.end()
                 break
         error = process.stderr.read()
+    task.hold(False)
+    if task.stopped and last.get("phase") != "done":
+        LOG.info("event=shader_preparation_stopped")
+        raise Stopped("The shader preparation was stopped. What is translated is kept: preparing again does the rest.")
     if last.get("phase") != "done":
         LOG.error("event=shader_preparation_failed phase=%s", last.get("phase"))
         raise LauncherError("Shader preparation stopped: " + str(last.get("error") or error.strip()[-300:] or last.get("phase")))
@@ -833,7 +853,7 @@ def _fetch(url, opener, timeout=30):
                                               timeout=timeout)
 
 
-def download_update(info, parent=None, on_progress=lambda done, total: None, opener=None, platform=None):
+def download_update(info, parent=None, on_progress=lambda done, total: None, opener=None, platform=None, task=None):
     """Download the new kit of `info` (check_update), check its SHA-256 against the release's SHA256SUMS.txt and unpack it in
     `parent` (default: the folder holding this kit). Returns the new kit's folder; an existing one is reused, nothing is
     overwritten, and this kit, the game and the saves are left as they are."""
@@ -864,6 +884,11 @@ def download_update(info, parent=None, on_progress=lambda done, total: None, ope
             while chunk := response.read(1 << 20):
                 out.write(chunk); digest.update(chunk); done += len(chunk)
                 on_progress(done, total)
+                if task:
+                    task.check("The download was stopped. Nothing was changed.")
+    except Stopped:
+        part.unlink(missing_ok=True)
+        raise
     except OSError as err:
         part.unlink(missing_ok=True)
         raise LauncherError("The update download stopped (network or disk). Nothing was changed.") from err
@@ -1003,13 +1028,39 @@ def linux_install_command(game_data, install_dir):
     return [tools["bash"], str(script), str(game_data), str(install_dir / "Orbitals"), str(install_jobs())]
 
 
-def install_from_files(game_data, install_dir=None, on_progress=lambda step, total, text: None, command=None, rebuild=False):
+SOURCE_NEEDS = ("exefs/main", "exefs/main.npdm", "romfs")
+
+
+def source_lacks(folder):
+    """What a folder lacks to be the one extracted from the player's copy."""
+    return [need for need in SOURCE_NEEDS if not (Path(folder) / need).exists()]
+
+
+def setup_log(install_dir=None):
+    return Path(install_dir or REPO / "games").resolve() / "setup.log"
+
+
+def discard_unfinished(step, install_dir, started):
+    """After a stop in the middle of a step: the linker writes these in place, and the setup takes an existing one for a finished one.
+    One from before this setup is left (the objects compiled so far are kept in any case)."""
+    unfinished = {3: REPO / "bin" / ("runtime_win64_win32.exe" if WINDOWS else "runtime_linux_x11"),
+                  4: install_dir / "Orbitals" / MODULE}.get(step)
+    try:
+        if unfinished and unfinished.stat().st_mtime >= started - 2:
+            unfinished.unlink()
+            LOG.info("event=unfinished_discarded file=%s", unfinished.name)
+    except FileNotFoundError:
+        pass
+
+
+def install_from_files(game_data, install_dir=None, on_progress=lambda step, total, text: None, command=None, rebuild=False, task=None):
     """Build from the player's ExeFS and RomFS and record progress in setup.log. `command` supplies a test installer.
-    rebuild: recompile the game code even where a compiled one is already there (an update in place)."""
+    rebuild: recompile the game code even where a compiled one is already there (an update in place). Stopping `task` keeps what is
+    compiled; the first step (unpacking the tools) and the last one are not cut short."""
+    task = task or Task()
     game_data = Path(game_data).resolve()
-    for need in ("exefs/main", "exefs/main.npdm", "romfs"):
-        if not (game_data / need).exists():
-            raise LauncherError(f"{need} is missing in {game_data.name}: choose the folder extracted from your copy, with exefs and romfs.")
+    for need in source_lacks(game_data):
+        raise LauncherError(f"{need} is missing in {game_data.name}: choose the folder extracted from your copy, with exefs and romfs.")
     install_dir = Path(install_dir or REPO / "games").resolve()
     if command is None:
         if WINDOWS:
@@ -1026,23 +1077,31 @@ def install_from_files(game_data, install_dir=None, on_progress=lambda step, tot
         else:
             raise LauncherError("Orbitals setup supports Windows and Linux x86-64.")
     install_dir.mkdir(parents=True, exist_ok=True)
-    log_path = install_dir / "setup.log"
+    log_path = setup_log(install_dir)
     LOG.info("event=install_start jobs=%s", command[-1])
-    with log_path.open("w", encoding="utf-8", errors="replace") as log, subprocess.Popen(
+    started = time.time()
+    step, last = 0, ""
+    task.check("The installation was stopped.")
+    task.hold(True)
+    with log_path.open("w", encoding="utf-8", errors="replace") as log, task.process(
             command, cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0,
             env=dict(os.environ, ORBITALS_PYTHON=sys.executable)) as process:
-        step, last = 0, ""
         for raw in process.stdout:
             line = raw.decode("utf-8", errors="replace").rstrip()
             log.write(line + "\n"); log.flush()
             m = re.match(r"\s*\[(\d)/(\d)\]\s*(.*)", line)
             if m:
                 step, last = int(m.group(1)), m.group(3)
+                task.hold(step in (1, SETUP_STEPS))
             elif line.strip():
                 last = line.strip()[:120]
             on_progress(step, SETUP_STEPS, last)
         code = process.wait()
+    task.hold(False)
+    if code and task.stopped:
+        discard_unfinished(step, install_dir, started)
+        LOG.info("event=install_stopped step=%s", step)
+        raise Stopped("The installation was stopped. What is compiled is kept: installing again continues from there.")
     if code:
         raise LauncherError(f"The installation failed (code {code}). The details are in {log_path}.")
     LOG.info("event=install_done")

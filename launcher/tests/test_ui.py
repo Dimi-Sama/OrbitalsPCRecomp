@@ -12,12 +12,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from launcher import core, graphics, page_settings, ui
+from launcher import core, graphics, page_settings, page_tools, ui
 from launcher.neo import TitleScreen
+from launcher.tasks import Stopped
 from launcher.ui import Launcher
 from launcher.tests.test_launcher import build_fixture
 
-PAGES = ("Home", "Profiles", "Graphics", "Controls", "Settings", "Support")
+PAGES = ("Home", "Profiles", "Graphics", "Controls", "Settings", "Files", "Tools")
 
 
 class LauncherWindowTest(unittest.TestCase):
@@ -95,7 +96,7 @@ class LauncherWindowTest(unittest.TestCase):
         app = self.window()
         app.pad_names = ["Pad"]
         app.show("Home")
-        for pick, page in ((lambda s: s.chips[0], "Support"), (lambda s: s.chips[2], "Profiles"), (lambda s: s.pads_spot, "Controls")):
+        for pick, page in ((lambda s: s.chips[0], "Files"), (lambda s: s.chips[2], "Profiles"), (lambda s: s.pads_spot, "Controls")):
             app.show("Home"); self.spin(0.1)
             screen = self.title(app)
             with patch.object(page_settings, "gamepad_inventory", return_value=("XInput", [])):
@@ -157,11 +158,129 @@ class LauncherWindowTest(unittest.TestCase):
         dialog.assert_not_called()
         card = self.title(app).card
         self.assertTrue(card.alarm)
-        self.assertEqual((card.title, card.text), ("Recompiling orbitals failed", "The disk is full."))
+        self.assertEqual((card.title, card.text), ("Recompiling Orbitals failed", "The disk is full."))
         self.assertEqual([label for label, _ in card.buttons], ["Try again", "Open logs", "Dismiss"])
         card.buttons[0][1]()
         self.assertEqual(tried, [1])
         self.assertIsNone(app.notice)
+
+    def buttons(self, widget):
+        found = {}
+        for child in widget.winfo_children():
+            if child.winfo_class() == "TButton":
+                found[child.cget("text")] = child
+            found |= self.buttons(child)
+        return found
+
+    def test_files_page_takes_a_copy_and_installs_it(self):
+        app = self.window(game=False)
+        app.show("Files"); self.spin(0.1)
+        self.assertTrue(self.buttons(app.page)["INSTALL"].instate(["disabled"]))
+        holder = self.root / "extracted"   # holds the copy, as some tools make it
+        (holder / "game" / "exefs").mkdir(parents=True)
+        app.set_source(holder)
+        self.assertEqual(app.source(), holder, "not a copy yet")
+        (holder / "game" / "romfs").mkdir()
+        for name in ("main", "main.npdm"):
+            (holder / "game" / "exefs" / name).write_bytes(b"x")
+        app.set_source(holder)
+        self.assertEqual(app.source(), holder / "game")
+        app.refresh(); self.spin(0.1)
+        install = self.buttons(app.page)["INSTALL"]
+        self.assertTrue(install.instate(["!disabled"]))
+        native = self.root / "game"
+        build_fixture(native)
+
+        def setup(source, on_progress, task, rebuild=False):
+            for done in range(3):
+                on_progress(4, 5, f"compiled {done * 100}/400 (1s)"); time.sleep(0.15)
+            return core.installation(native)
+
+        with patch.object(ui, "install_from_files", side_effect=setup):
+            install.invoke()
+            self.spin(0.1)
+            self.assertEqual(app.active_page, "Home")   # its demo
+            self.assertIn("Stop", self.buttons(app.page))
+            app.show("Files"); self.spin(0.3)
+            self.assertTrue(app.view.steps[2][1].cget("text").startswith("✓"))
+            self.assertTrue(app.view.steps[3][1].cget("text").startswith("▶"))
+            self.spin(0.6)
+        self.assertEqual(app.game.root, native.resolve())
+        self.assertEqual((app.active_page, app.card().title), ("Home", "Shaders are not prepared"))
+
+    def test_files_page_shows_a_failure_with_its_retry(self):
+        app = self.window()
+        app.show("Files")
+        with patch.object(ui, "install_from_files", side_effect=core.LauncherError("The installation failed (code 1).")):
+            app.set_source(self.root / "game")
+            app.start_install()
+            app.show("Files")
+            self.spin(0.4)
+        self.assertEqual(app.active_page, "Files")
+        self.assertIn("Try again", self.buttons(app.page))
+
+    def test_a_long_job_can_be_stopped_and_closing_asks(self):
+        app = self.window()
+        app.set_source(self.root / "game")
+
+        def setup(source, on_progress, task, rebuild=False):
+            while not task.stopped:
+                time.sleep(0.02)
+            raise Stopped("The installation was stopped. What is compiled is kept.")
+
+        with patch.object(ui, "install_from_files", side_effect=setup), patch.object(ui.messagebox, "askyesno", return_value=False) as ask:
+            app.start_install(); self.spin(0.1)
+            app.stop_job()
+            self.assertFalse(app.task.stopped, "not confirmed")
+            app.close()
+            self.assertTrue(self.tk.winfo_exists())
+            ask.return_value = True
+            app.stop_job(); self.spin(0.5)
+        self.assertIsNone(app.job)
+        self.assertIsNone(app.notice, "a stop is not a failure")
+        self.assertIn("kept", app.page_state.get())
+        self.assertEqual(app.card().title, "Shaders are not prepared")
+
+    def test_a_stop_that_leaves_the_game_incomplete_says_so(self):
+        app = self.window()
+        (self.root / "game" / core.MODULE).unlink()
+        app.check_game()
+        self.assertIsNone(app.game)
+        self.assertEqual(app.card().title, "The game is not complete")
+
+    def test_profiles_as_rows(self):
+        app = self.window()
+        app.show("Profiles")
+        self.assertFalse(self.row(app, "Delete this profile").on, "the only one")
+        with patch.object(app, "ask_text", return_value="Second"):
+            self.row(app, "New profile").press()
+        active = self.row(app, "Active profile")
+        self.assertEqual(active.value.cget("text"), "Second")
+        active.move(-1)
+        self.assertEqual(app.profiles.profile["name"], "Player")
+        self.assertTrue(self.row(app, "Delete this profile").on)
+
+    def test_a_job_that_ends_leaves_the_player_where_they_were(self):
+        app = self.window()
+        app.show("Profiles")
+        app.view.rows.choose("Back up")
+        app.background("Copying…", lambda: time.sleep(0.1), lambda _: None)
+        self.spin(0.5)
+        self.assertEqual(app.view.rows.selected.caption, "Back up")
+        app.show("Settings")
+        row = self.row(app, "GitHub issues page")
+        row.entry.delete(0, "end"); row.entry.insert(0, "https://github.com/someone/project/issues")
+        app.refresh()
+        self.assertEqual(app.profiles.data["issues"], "https://github.com/someone/project/issues")
+
+    def test_add_to_steam_says_what_it_did(self):
+        app = self.window()
+        app.show("Tools")
+        with patch.object(page_tools.steam, "add", side_effect=core.LauncherError("Steam was not found on this PC.")) as add:
+            self.row(app, "Add to Steam").press()
+            self.spin(0.6)
+        self.assertEqual(set(add.call_args.args[0]), {"p.png", ".png", "_hero.png"})
+        self.assertIn("not found", app.view.rows.text.cget("text"))
 
     def test_a_long_card_stays_above_the_chips(self):
         app = self.window()

@@ -38,13 +38,13 @@ on Linux.
 
 ## Install and play
 
-1. **Install from my files** (Windows and Linux x86-64). Choose the folder extracted from your copy of the game, with `exefs/` and `romfs/`.
-   Windows setup downloads and verifies the build tools. Linux setup uses the dependencies in [BUILDING.md](../BUILDING.md#linux--steam-deck).
-   Both recompile your game locally and select the new installation. The launcher shows each step and records the output in `games/setup.log`.
-2. Or **Locate a build**: the folder with `Orbitals.exe` and `Orbitals_code.dll` (Windows) or `Orbitals` and `Orbitals_code.so` (Linux),
-   made by the setup or by BUILDING.md. **Prepare ExeFS / RomFS** then checks your extracted files against that build (NSO module ids,
-   the IoStore containers, the SHA-256 of the `.utoc` tables when the build has them), checks the disk space and publishes the
-   installation in one step.
+1. **GAME FILES** (Windows and Linux x86-64). Choose the folder extracted from your copy of the game, with `exefs/` and `romfs/`, then
+   **INSTALL**. Windows setup downloads and verifies the build tools. Linux setup uses the dependencies in
+   [BUILDING.md](../BUILDING.md#linux--steam-deck). Both recompile your game locally and select the new installation. The page shows each
+   step, the time left once it can be told, and what failed with **Try again**; the output is in `games/setup.log`. **Stop** keeps what is
+   compiled: installing again continues from there. Unpacking the first tools and the last step are not cut short.
+2. Or **Use an installation made before**: the folder with `Orbitals.exe` and `Orbitals_code.dll` (Windows) or `Orbitals` and
+   `Orbitals_code.so` (Linux), made by the setup or by BUILDING.md.
 3. **Play**. *READY* means the expected layout is there; the rendering itself depends on the build, its dependencies and the
    GPU driver.
 
@@ -75,7 +75,7 @@ resolution from 960×540 to 1920×1080. The game draws the HUD at 1080p. Set the
 uses the monitor's desktop resolution. The same tab sets upscaling, VSync and frame rate. **30 (async replay)** keeps the 30 FPS cap
 with replay on a separate thread. It reduced cinematic slowdown under CPU contention in the Windows test. Settings
 apply per profile at the next launch. See GRAPHICS_SETTINGS.md for the measurements. **General** contains the volume, the title
-screen's animation, the issues URL and the optional update check.
+screen's animation, the issues URL and the check for updates at start.
 On Windows, **F1 → 3D resolution (this session)** changes the actual scene resolution while the game is running.
 
 ## Controls
@@ -90,15 +90,21 @@ Choose **Mouse + IJKL** to enable the mouse camera at launch. **F2** toggles the
 control ZR and ZL. WASD moves the left stick, and IJKL can move the right stick. **Game default** and a blank speed use the runtime's
 INI settings.
 
+## Tools
+
+**Add to Steam** adds the launcher as a non-Steam game for every Steam user of the PC, with library images cut from the launcher's
+illustration. The other shortcuts are kept, and a copy of the list before is left beside it (`shortcuts.vdf.before-orbitals`); an image you
+set yourself stays. Part of it is from [mkw-recomp](https://github.com/adriadam10/mkw-recomp) (MIT, `LICENSE_mkw-recomp.txt`).
+
 ## Report a problem
 
-1. **Report a problem**: choose the category, describe the steps to reproduce.
+1. **TOOLS → Report a problem**: choose the category, describe the steps to reproduce.
 2. Choose what to include, then **Preview**. Logs go through a filter that masks recognised local paths, some secrets, e-mail addresses
    and public IP addresses. Check them before posting. Saves are off by default; each save file must be chosen explicitly and is
    included as a binary copy.
 3. **Create the ZIP**. The output folder also holds `issue.md`; **Copy the text** is in the preview.
-4. **GitHub issues** opens the configured issues page, where you can attach the ZIP you checked. Use **Open releases** in Settings to
-   browse private previews with your signed-in GitHub account. **Check now** checks the latest public stable release through GitHub's API.
+4. **GitHub issues** opens the configured issues page, where you can attach the ZIP you checked. Use **All releases** in Tools to
+   browse private previews with your signed-in GitHub account. **Check now** there checks the latest public stable release through GitHub's API.
 
 ```text
 Orbitals-BugReport-<timestamp>.zip
@@ -130,7 +136,7 @@ python -B -m unittest discover -s launcher/tests -v
 
 The launcher runs from source with the standard library and Tk. The tests cover detection, preparation, profile isolation, restores,
 launch errors, graphics settings (including values saved by the earlier French interface), the update check, the installer step
-parsing and the reports, and every page of the window at its minimum size. The launcher was checked with the Windows runtime. The Linux x86-64 package can be tested using the
+parsing, stopping a job, the Steam shortcut and the reports, and every page of the window at its minimum size. The launcher was checked with the Windows runtime. The Linux x86-64 package can be tested using the
 [the README](../README.md#getting-started).
 
 The audit also looked at the installation and save handling of [Hookshot-rs](https://github.com/dazemc/Hookshot-rs) and
