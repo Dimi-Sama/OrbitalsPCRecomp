@@ -12,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from launcher import core, ui
+from launcher import core, graphics, page_settings, ui
 from launcher.neo import TitleScreen
 from launcher.ui import Launcher
 from launcher.tests.test_launcher import build_fixture
@@ -93,17 +93,96 @@ class LauncherWindowTest(unittest.TestCase):
 
     def test_controller_scan_neither_blocks_saving_nor_loops_on_errors(self):
         app = self.window()
-        with patch.object(ui, "gamepad_inventory", side_effect=RuntimeError("unexpected")) as scan, \
+        with patch.object(page_settings, "gamepad_inventory", side_effect=RuntimeError("unexpected")) as scan, \
                 patch.object(ui.messagebox, "showerror") as dialog:
             app.show("Controls")
             self.assertIsNone(app.job)
+            app.keep(keyboard=2)
             self.spin(0.6)
         self.assertEqual(scan.call_count, 1)
         dialog.assert_not_called()
+        self.assertEqual(app.profiles.settings["keyboard"], 2)
+
+    def row(self, app, caption):
+        return next(row for row in app.view.rows.items if row.caption == caption)
+
+    def test_settings_are_kept_as_they_change(self):
+        app = self.window()
+        app.show("Settings")
+        self.row(app, "Volume").move(-1)
+        self.row(app, "Volume").move(-1)
+        self.assertEqual(self.row(app, "Volume").value.cget("text"), "90 %")
+        app.show("Graphics")   # another tab, before they are written
+        self.assertEqual(app.profiles.settings["volume"], 90)
+        self.row(app, "VSync").press()
+        self.spin(0.5)
+        self.assertFalse(app.profiles.settings["vsync"])
+        self.assertEqual(core.Profiles(app.local).settings["volume"], 90)
+
+    def test_a_preset_and_the_rows_under_it(self):
+        app = self.window()
+        app.show("Graphics")
+        preset, resolution = self.row(app, "Preset"), self.row(app, "Internal 3D resolution")
+        for name in graphics.PRESET_ORDER[:3]:
+            preset.take(name)
+            self.assertEqual(resolution.get(), graphics.PRESET_MODE[name])
+        resolution.take("1600x900")
+        self.assertEqual((preset.get(), resolution.get()), ("Custom", "1600x900"))
+        app.flush()
+        self.assertEqual(core.graphics_settings(app.profiles.settings)["preset"], "Custom")
+        self.row(app, "All of this page").press()   # reset, then its undo
+        self.assertEqual((preset.get(), app.profiles.profile["settings"]), ("High", {}))
+        self.row(app, "All of this page").press()
+        self.assertEqual((preset.get(), resolution.get()), ("Custom", "1600x900"))
+
+    def test_a_value_of_its_own_is_shown_and_left(self):
+        app = self.window()
+        app.profiles.update_active(settings={"mouse_sensitivity": 147, "size": "1000x700"})   # from the game's own settings
+        with patch.object(page_settings, "gamepad_inventory", return_value=("XInput", [])):
+            app.show("Controls")
+            self.assertEqual(self.row(app, "Mouse speed").value.cget("text"), "147 %")
+            app.show("Graphics")
+        self.assertEqual(self.row(app, "Window size").value.cget("text"), "1000×700")
+        self.row(app, "Display").take("Borderless")
+        self.assertFalse(self.row(app, "Window size").on)
+
+    def test_rows_are_read_only_while_the_game_runs(self):
+        app = self.window()
+        app.process = object()
+        app.show("Graphics")
+        self.assertFalse(any(row.on for row in app.view.rows.items))
+        self.row(app, "VSync").press()
+        with self.assertRaises(core.LauncherError):
+            app.keep(vsync=False)
+        app.process = None
+        self.assertTrue(app.profiles.settings["vsync"])
+
+    def test_a_refused_text_is_said_under_its_field(self):
+        app = self.window()
+        app.show("Settings")
+        row = self.row(app, "GitHub issues page")
+        row.entry.delete(0, "end"); row.entry.insert(0, "https://example.com"); row.keep()
+        self.assertIn("/issues", row.error.cget("text"))
+        row.entry.delete(0, "end"); row.entry.insert(0, "https://github.com/someone/project/issues/"); row.keep()
+        self.assertEqual((row.error.cget("text"), app.profiles.data["issues"]), ("", "https://github.com/someone/project/issues"))
+
+    def test_the_keyboard_goes_through_rows_header_and_tabs(self):
+        app = self.window()
+        app.show("Graphics"); self.spin(0.1)
+        rows = app.view.rows
+        self.assertIs(rows.selected, rows.items[0])
+        rows.step(rows.items[0], 1); self.spin(0.05)
+        rows.step(rows.items[1], -1); self.spin(0.05)
+        rows.step(rows.items[0], -1); self.spin(0.05)
+        app.header._move(1)
+        app.header.places[app.header.cursor]()
+        self.assertEqual(app.active_page, "Controls")
+        app.next_tab(1)
+        self.assertEqual(app.active_page, "Settings")
 
     def test_every_page_can_be_seen_whole_at_the_minimum_size(self):
         app = self.window("880x650")
-        with patch.object(ui, "gamepad_inventory", return_value=("XInput", [])):
+        with patch.object(page_settings, "gamepad_inventory", return_value=("XInput", [])):
             for page in PAGES[1:]:
                 with self.subTest(page=page):
                     app.show(page); self.spin(0.15)

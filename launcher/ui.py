@@ -8,40 +8,21 @@ import threading
 import tkinter as tk
 import webbrowser
 from pathlib import Path
-from tkinter import filedialog, font, messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from . import VERSION, graphics
-from .core import (LOG, RELEASES_URL, REPO, WINDOWS, LauncherError, Profiles, carry_saves, check_update, detect_installation,
-                   download_update, finish_session, game_source, gamepad_inventory, graphics_settings, install_fraction,
-                   install_from_files, installation, json_bytes, latest_run, launch, launch_kit, outdated_release, prepare,
-                   prepare_shaders, runtime_info, shader_preparation, validate_settings)
+from . import VERSION
+from .core import (DEFAULT_SETTINGS, LOG, REPO, WINDOWS, LauncherError, Profiles, carry_saves, check_update, detect_installation,
+                   download_update, finish_session, game_source, install_fraction, install_from_files, installation, json_bytes,
+                   latest_run, launch, launch_kit, outdated_release, prepare, prepare_shaders, runtime_info, shader_preparation,
+                   validate_settings)
 from .demo import DemoScreen
-from .look import BG, CYAN, INK, MUTED, PANEL, PEACH, RAIL, RED, ScrollPage, label, surface, theme
-from .neo import TitleScreen, header_strip
+from .look import BG, CYAN, MUTED, PANEL, PEACH, RAIL, RED, ScrollPage, label, px, surface, theme
+from .neo import HeaderStrip, TitleScreen
+from .page_settings import REMOVED, ControlsPage, GeneralPage, GraphicsPage
 from .report_form import ReportForm, show_text
 from .reports import gpu_info, system_info
+from .rows import TextRow
 from .shader_text import SHADER_PREP_TEXT, shader_progress, shader_progress_text
-
-
-def native_size(root):
-    """The primary monitor's resolution in physical pixels (Windows: not the DPI-scaled size Tk reports), or None."""
-    if WINDOWS:
-        try:
-            import ctypes
-            user32 = ctypes.windll.user32
-            dc = user32.GetDC(0)
-            try:
-                w, h = ctypes.windll.gdi32.GetDeviceCaps(dc, 118), ctypes.windll.gdi32.GetDeviceCaps(dc, 117)   # DESKTOPHORZRES, DESKTOPVERTRES
-            finally:
-                user32.ReleaseDC(0, dc)
-            if w > 0 and h > 0:
-                return w, h
-        except (OSError, AttributeError):
-            pass
-    try:
-        return root.winfo_screenwidth(), root.winfo_screenheight()
-    except tk.TclError:
-        return None
 
 
 def open_folder(path):
@@ -69,6 +50,8 @@ class Launcher:
         self.page_state = tk.StringVar()
         self.events = queue.Queue()
         self.calls = queue.Queue()   # functions other threads want run on this one (post)
+        self.pending = {}            # settings changed and not written yet (keep, flush)
+        self.flush_timer = None
         self.font, self.heading_font = theme(root)
         assets = Path(__file__).with_name("assets")
         self.icon = tk.PhotoImage(file=str(assets / "orbitals-icon.png"))
@@ -130,6 +113,72 @@ class Launcher:
             self.post(lambda: done(result))
 
         threading.Thread(target=work, daemon=True).start()
+
+    # ---- settings: kept as they change
+    def settings(self):
+        """The active profile's settings, with the changes not written yet."""
+        settings = self.profiles.settings
+        for key, value in self.pending.items():
+            if value is not REMOVED:
+                settings[key] = value
+            elif key in DEFAULT_SETTINGS:
+                settings[key] = DEFAULT_SETTINGS[key]
+            else:
+                settings.pop(key, None)
+        return settings
+
+    def keep(self, **values):
+        """Change settings of the active profile. They are written a moment later, together: a held key changes many."""
+        if self.process:
+            raise LauncherError("The game is running: use its own PC settings, they are read when it closes.")
+        before, self.pending = self.pending, self.pending | values
+        try:
+            validate_settings(self.settings())
+        except LauncherError:
+            self.pending = before
+            raise
+        if self.flush_timer:
+            self.root.after_cancel(self.flush_timer)
+        self.flush_timer = self.root.after(250, lambda: self.action(self.flush))
+
+    def flush(self):
+        if self.flush_timer:
+            self.root.after_cancel(self.flush_timer)
+            self.flush_timer = None
+        if not self.pending:
+            return
+        stored = dict(self.profiles.profile["settings"]) | self.pending
+        self.profiles.update_active(settings={key: value for key, value in stored.items() if value is not REMOVED})
+        self.pending = {}
+        self.page_state.set("Settings saved.")
+
+    def settings_note(self):
+        text = ("The game is running: its own PC settings apply, and are kept when it closes." if self.process else
+                f"For {self.profiles.profile['name']}. Changes are saved as you make them and apply when you press PLAY.")
+        label(self.note_bar, text, color=PEACH if self.process else MUTED).pack(anchor="w")
+
+    def ask_text(self, title, prompt, value=""):
+        return simpledialog.askstring(title, prompt, parent=self.root, initialvalue=value)
+
+    @staticmethod
+    def open_folder(path):
+        open_folder(path)
+
+    def focus_header(self):
+        if self.header:
+            self.header.focus_set()
+
+    def focus_page(self):
+        """From the header down to the page: its selected row, or its first widget."""
+        rows = getattr(self.view, "rows", None)
+        if rows and rows.selected:
+            rows.selected.focus_set()
+        elif self.header:
+            self.header.tk_focusNext().focus_set()
+
+    def check_now(self):
+        self.page_state.set("Checking for updates…")
+        threading.Thread(target=self.update_result, daemon=True).start()
 
     def offer_recompile(self, asked_now=False):
         """A game compiled by an older release: say it once per (game release, launcher version), and from Play."""
@@ -249,6 +298,7 @@ class Launcher:
     def guard(self):
         if self.process or self.job:
             raise LauncherError("Wait for the current session or operation to finish.")
+        self.flush()
 
     def button(self, parent, title, callback, *, style="TButton"):
         button = ttk.Button(parent, text=title, style=style, command=lambda: self.action(callback))
@@ -270,27 +320,57 @@ class Launcher:
         self.stage.pack(fill="both", expand=True)
         self.page = tk.Frame(self.stage, bg=BG)
         self.scroll = None   # the ScrollPage shown, if any
+        self.header = self.view = self.side = None   # a sub-screen's header, its page object, what stands beside it
         for event in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
             self.root.bind_all(event, lambda e: self.scroll and self.scroll.wheel(e))
         self.root.bind_all("<FocusIn>", lambda e: self.scroll and self.scroll.reveal(e), add="+")
         self.root.bind("<Escape>", lambda _e: self.show("Home") if self.active_page != "Home" else None)
+        self.root.bind("<Control-Tab>", lambda _e: self.next_tab(1))
+        self.root.bind("<Control-Shift-Tab>" if WINDOWS else "<Control-ISO_Left_Tab>", lambda _e: self.next_tab(-1))
 
-    SUBSCREENS = {"Graphics": ("SETTINGS", "Graphics"), "Controls": ("SETTINGS", "Controls"), "Settings": ("SETTINGS", "Launcher"),
-                  "Profiles": ("PROFILES", None), "Support": ("HELP", None)}
+    TABS = (("Graphics", "GRAPHICS"), ("Controls", "CONTROLS"), ("Settings", "GENERAL"))
+    SETTINGS_PAGES = {"Graphics": GraphicsPage, "Controls": ControlsPage, "Settings": GeneralPage}
+    SUBSCREENS = {"Profiles": "PROFILES", "Support": "HELP"}
+
+    def next_tab(self, direction):
+        names = [name for name, _ in self.TABS]
+        if self.active_page in names:
+            self.show(names[(names.index(self.active_page) + direction) % len(names)])
+        return "break"
 
     def show(self, name):
+        self.flush()
+        for row in getattr(getattr(self.view, "rows", None), "items", ()):   # what is being typed is not lost
+            if isinstance(row, TextRow):
+                row.keep()
         self.active_page = name
-        self.scroll = None
+        self.scroll = self.header = self.view = self.side = None
         for child in self.stage.winfo_children():
             child.destroy()
         self.demo = None
         if name != "Home":   # a sub-screen: the title screen's header strip, its tabs, then the page itself
-            title, tab = self.SUBSCREENS.get(name, (name.upper(), None))
-            tabs = [("Graphics", "GRAPHICS"), ("Controls", "CONTROLS"), ("Settings", "LAUNCHER")] if tab else []
-            header_strip(self.stage, title, tabs, name, on_tab=self.show, on_back=lambda: self.show("Home")).pack(fill="x")
-            self.scroll = ScrollPage(self.stage)
-            self.scroll.pack(fill="both", expand=True, padx=(34, 20), pady=(14, 0))
+            settings = name in self.SETTINGS_PAGES
+            self.header = HeaderStrip(self.stage, "SETTINGS" if settings else self.SUBSCREENS[name], self.TABS if settings else (), name,
+                                      on_tab=self.show, on_back=lambda: self.show("Home"), on_down=self.focus_page)
+            self.header.pack(fill="x")
+            if settings:   # rows on the left, what the selected one does on the right
+                self.note_bar = tk.Frame(self.stage, bg=BG)
+                self.note_bar.pack(fill="x", padx=px(34), pady=(px(12), 0))
+                body = tk.Frame(self.stage, bg=BG)
+                body.pack(fill="both", expand=True, padx=(px(34), px(20)), pady=(px(6), 0))
+                self.side = tk.Frame(body, bg=BG, width=px(300))
+                self.side.pack(side="right", fill="y", padx=(px(22), 0))
+                self.side.pack_propagate(False)
+            else:
+                body = self.stage
+            self.scroll = ScrollPage(body)
+            self.scroll.pack(side="left" if settings else "top", fill="both", expand=True,
+                             padx=0 if settings else (px(34), px(20)), pady=0 if settings else (px(14), 0))
             self.page = self.scroll.body
+            if settings:
+                self.view = self.SETTINGS_PAGES[name](self)
+                return
+            self.header.focus_set()
         else:
             self.page = tk.Frame(self.stage, bg=BG)
             self.page.pack(fill="both", expand=True)
@@ -300,8 +380,7 @@ class Launcher:
             self.demo.set_progress(*self.demo_state)
             label(self.page, "You can keep using the other pages; this screen comes back on Home.", color=MUTED, size=9).pack(anchor="w", pady=(8, 0))
             return
-        getattr(self, {"Home": "home", "Profiles": "profile_page", "Graphics": "graphics_page", "Controls": "controls_page", "Settings": "settings_page",
-                       "Support": "support_page"}[name])()
+        getattr(self, {"Home": "home", "Profiles": "profile_page", "Support": "support_page"}[name])()
 
     def refresh(self):
         """The page again, as the state is now; on a page of rows, where the player was."""
@@ -349,7 +428,8 @@ class Launcher:
                       CYAN if shaders else PEACH)
         tags = [game_tag, shader_tag, ("PROFILE", self.profiles.profile["name"], RED)]
         subtitle = self.error_text[:400] if self.error_text else "A cooperative adventure in space"
-        TitleScreen(self.page, menu, tags, subtitle=subtitle, still=lambda: self.process is not None).pack(fill="both", expand=True)
+        TitleScreen(self.page, menu, tags, subtitle=subtitle, still=lambda: self.process is not None,
+                    animate=bool(self.profiles.data.get("animate", True))).pack(fill="both", expand=True)
 
     def locate(self):
         self.guard()
@@ -619,245 +699,6 @@ class Launcher:
         if path:
             self.save_operation(lambda: self.profiles.export(Path(path)))
 
-    def settings_page(self):
-        self.heading("Settings", f"Settings applied at launch for {self.profiles.profile['name']}.")
-        card = surface(self.page)
-        card.pack(fill="x", pady=(0, 10))
-        panel = tk.Frame(card, bg=PANEL)
-        panel.pack(fill="x", padx=13, pady=(9, 11))
-        label(panel, "Volume (%)", bg=PANEL, color=MUTED, size=9).pack(anchor="w", pady=(0, 2))
-        volume = tk.StringVar(value=self.profiles.settings["volume"])
-        ttk.Spinbox(panel, from_=0, to=100, textvariable=volume, width=9).pack(anchor="w")
-        label(self.page, "GitHub issues URL", color=MUTED, size=9).pack(anchor="w", pady=(1, 2))
-        address = ttk.Entry(self.page)
-        address.insert(0, self.profiles.data.get("issues", ""))
-        address.pack(fill="x", pady=(0, 9))
-        updates = tk.BooleanVar(value=bool(self.profiles.data.get("update_check", True)))
-        row = tk.Frame(self.page, bg=BG)
-        row.pack(fill="x", pady=(0, 10))
-        ttk.Checkbutton(row, variable=updates, text="Check for updates at start (one request to GitHub; a download only when you accept it)").pack(side="left")
-        self.button(row, "Check now", lambda: threading.Thread(target=self.update_result, daemon=True).start()).pack(side="left", padx=10)
-        self.button(row, "Open releases", lambda: webbrowser.open(RELEASES_URL)).pack(side="left")
-
-        def save():
-            self.guard()
-            try:
-                value = int(volume.get())
-            except ValueError as err:
-                raise LauncherError("Use a number for the volume.") from err
-            settings = self.profiles.profile["settings"] | {"volume": value}
-            validate_settings(self.profiles.settings | settings)
-            url = address.get().strip().rstrip("/")
-            if url and not re.fullmatch(r"https://github\.com/[\w.-]+/[\w.-]+/issues", url):
-                raise LauncherError("Enter a GitHub URL ending in /issues.")
-            entries = self.profiles.entries | {
-                self.profiles.active: self.profiles.profile | {"settings": settings}}
-            self.profiles.update(issues=url, profiles=entries, update_check=bool(updates.get()))
-            self.page_state.set("Settings saved.")
-
-        self.button(self.page, "Save", save, style="Play.TButton").pack(side="left", anchor="n")
-        self.button(self.page, "Launcher folder", lambda: open_folder(self.local)).pack(
-            side="left", anchor="n", padx=8, pady=4)
-
-    def controls_page(self):
-        self.heading("Controls", f"Input settings for {self.profiles.profile['name']}.")
-        card = surface(self.page)
-        card.pack(fill="x", pady=(0, 12))
-        panel = tk.Frame(card, bg=PANEL)
-        panel.pack(fill="x", padx=13, pady=11)
-        detected = tk.StringVar(value="Close the game to scan for controllers." if self.process else "Ready to scan.")
-        scan_button = self.button(panel, "Scan", lambda: scan())
-        scan_button.pack(side="right", anchor="n")
-        label(panel, "Connected controllers", bg=PANEL, color=CYAN, bold=True).pack(anchor="w")
-        label(panel, textvariable=detected, bg=PANEL, color=MUTED, wraplength=480).pack(
-            anchor="w", pady=(5, 0))
-
-        def scan():
-            game = self.game
-
-            def probe():
-                try:
-                    return gamepad_inventory(game)
-                except LauncherError as err:
-                    return None, str(err)
-
-            def show_devices(result):
-                if not card.winfo_exists():   # another page is shown
-                    return
-                scan_button.state(["!disabled"])
-                backend, devices = (None, "Could not check the connected controllers.") if isinstance(result, Exception) else result
-                if backend is None:
-                    detected.set(devices)
-                elif backend == "unavailable":
-                    detected.set("Controller support is unavailable on this system.")
-                elif devices:
-                    entries = [name if mapped else f"{name} · no gamepad mapping" for name, mapped in devices[:6]]
-                    if len(devices) > 6:
-                        entries.append(f"and {len(devices) - 6} more")
-                    detected.set(f"{backend}\n" + "\n".join(entries))
-                else:
-                    detected.set(f"No controllers detected · {backend}")
-
-            scan_button.state(["disabled"])
-            detected.set("Scanning…")
-            self.probe(probe, show_devices)
-
-        if self.process:
-            scan_button.state(["disabled"])
-        else:
-            scan()
-
-        settings = self.profiles.settings
-        card2 = surface(self.page)
-        card2.pack(fill="x", pady=(0, 12))
-        panel = tk.Frame(card2, bg=PANEL)
-        panel.pack(fill="x", padx=13, pady=11)
-        panel.columnconfigure((0, 1, 2), weight=1)
-        players = {"Player 1": 1, "Player 2": 2}
-        cameras = {"Game default": None, "Mouse + IJKL": True, "IJKL only": False}
-        player = tk.StringVar(value=f"Player {settings['keyboard']}")
-        camera = tk.StringVar(value=next((name for name, value in cameras.items() if value is settings["mouse_camera"]),
-                                         "Game default"))
-        speed = tk.StringVar(value=settings["mouse_sensitivity"] or "")
-        vibration = tk.BooleanVar(value=settings["vibration"])
-        label(panel, "Keyboard and mouse", bg=PANEL, color=CYAN, bold=True).grid(row=0, column=0, columnspan=3, sticky="w")
-        for index, (caption, widget) in enumerate((
-            ("Assigned player", ttk.Combobox(panel, values=tuple(players), textvariable=player, state="readonly", width=13)),
-            ("Right stick", ttk.Combobox(panel, values=tuple(cameras), textvariable=camera, state="readonly", width=14)),
-            ("Mouse speed (%)", ttk.Spinbox(panel, from_=10, to=500, textvariable=speed, width=10)),
-        )):
-            label(panel, caption, bg=PANEL, color=MUTED, size=9).grid(row=1, column=index, sticky="w", pady=(7, 2))
-            widget.grid(row=2, column=index, sticky="ew", padx=(0, 9))
-        label(panel, "Choose Player 2 for co-op with one controller. Keyboard and mouse take over Player 1 when "
-                     "its controller is absent. Leave mouse speed blank to use the game's setting.",
-              bg=PANEL, color=MUTED, wraplength=520).grid(row=3, column=0, columnspan=3, sticky="w", pady=(10, 3))
-        label(panel, "F2 toggles mouse capture in game. Left click is ZR and right click is ZL.",
-              bg=PANEL, color=MUTED, wraplength=520).grid(row=4, column=0, columnspan=3, sticky="w")
-        if WINDOWS:
-            ttk.Checkbutton(panel, text="Controller vibration", variable=vibration, style="Panel.TCheckbutton").grid(
-                row=5, column=0, columnspan=3, sticky="w", pady=(8, 0))
-
-        def save():
-            self.guard()
-            try:
-                sensitivity = int(speed.get()) if speed.get().strip() else None
-            except ValueError as err:
-                raise LauncherError("Enter a mouse speed from 10 to 500, or leave it blank.") from err
-            values = {"keyboard": players[player.get()], "mouse_camera": cameras[camera.get()],
-                      "mouse_sensitivity": sensitivity, "vibration": vibration.get()}
-            validate_settings(self.profiles.settings | values)
-            self.profiles.update_active(settings=self.profiles.profile["settings"] | values)
-            self.page_state.set("Controls saved for the next launch.")
-
-        self.button(self.page, "Save", save, style="Play.TButton").pack(anchor="w")
-
-    def graphics_page(self):
-        """Presets and options of launcher/graphics.py (only measured ones), frame pacing, display; applied at the next launch."""
-        self.heading("Graphics", "Applied at the next launch (restart needed). High = the game's own console rendering.")
-        settings = self.profiles.settings
-        gfx = graphics_settings(settings)
-        preset = tk.StringVar(value=gfx["preset"])
-        option_vars = {name: tk.StringVar(value=gfx.get(name, graphics.ORIGINAL)) for name in graphics.OPTIONS}
-        fps = tk.StringVar(value=settings["fps"])
-        mode = tk.StringVar(value=settings["mode"])
-        display = tk.StringVar(value=settings["display"])
-        size = tk.StringVar(value=settings["size"])
-        upscale = tk.StringVar(value=settings["upscale"])
-        vsync = tk.BooleanVar(value=settings["vsync"])
-
-        card = surface(self.page)
-        card.pack(fill="x", pady=(0, 10))
-        panel = tk.Frame(card, bg=PANEL)
-        panel.pack(fill="x", padx=13, pady=(9, 11))
-        panel.columnconfigure((0, 1, 2), weight=1, uniform="gfx")
-        label(panel, "Quality", bg=PANEL, color=CYAN, bold=True).grid(row=0, column=0, columnspan=3, sticky="w")
-        label(panel, "Preset", bg=PANEL, size=9, color=MUTED).grid(row=1, column=0, sticky="w", pady=(7, 1))
-        combo = ttk.Combobox(panel, textvariable=preset, values=graphics.PRESET_ORDER, state="readonly", width=14)
-        combo.grid(row=2, column=0, sticky="ew", padx=(0, 10))
-        controls = {}
-        for n, (name, (caption, values)) in enumerate(graphics.OPTIONS.items()):
-            col, row = (n + 1) % 3, ((n + 1) // 3) * 2 + 1
-            label(panel, caption, bg=PANEL, size=9, color=MUTED).grid(row=row, column=col, sticky="w", pady=(7, 1))
-            controls[name] = ttk.Combobox(panel, textvariable=option_vars[name], values=tuple(values), state="readonly", width=24)
-            controls[name].grid(row=row + 1, column=col, sticky="ew", padx=(0, 10))
-        summary = tk.StringVar()
-
-        def on_preset(*_):
-            chosen = graphics.resolve({"preset": preset.get(), **{k: v.get() for k, v in option_vars.items()}})
-            for name, control in controls.items():
-                if preset.get() != "Custom":
-                    option_vars[name].set(chosen[name])
-                control.configure(state="readonly" if preset.get() == "Custom" else "disabled")
-            summary.set(graphics.PRESET_NOTES.get(preset.get(), ""))
-            if preset.get() in graphics.PRESET_MODE:
-                mode.set(graphics.PRESET_MODE[preset.get()])
-            if mode_control is not None:
-                mode_control.configure(state="readonly" if preset.get() == "Custom" else "disabled")
-        mode_control = None
-        preset.trace_add("write", on_preset)
-        label(panel, textvariable=summary, bg=PANEL, size=9, color=MUTED, wraplength=760).grid(
-            row=99, column=0, columnspan=3, sticky="w", pady=(9, 0))
-
-        card2 = surface(self.page)
-        card2.pack(fill="x", pady=(0, 10))
-        panel2 = tk.Frame(card2, bg=PANEL)
-        panel2.pack(fill="x", padx=13, pady=(9, 11))
-        panel2.columnconfigure((0, 1, 2), weight=1, uniform="gfx2")
-        label(panel2, "Display and frame rate", bg=PANEL, color=CYAN, bold=True).grid(row=0, column=0, columnspan=3, sticky="w")
-        size_control = ttk.Combobox(panel2, textvariable=size, values=graphics.output_sizes(native_size(self.root)), width=18)
-        rows = (("Frame rate", ttk.Combobox(panel2, textvariable=fps, values=graphics.FPS_CHOICES, state="readonly", width=24)),
-                ("Internal 3D resolution", ttk.Combobox(panel2, textvariable=mode, values=graphics.RENDER_MODES, state="readonly", width=14)),
-                ("Display", ttk.Combobox(panel2, textvariable=display, values=("Windowed", "Borderless"), state="readonly", width=14)),
-                ("Window output size", size_control),
-                ("Upscaling filter", ttk.Combobox(panel2, textvariable=upscale, values=("Standard", "Sharp", "FSR1"), state="readonly", width=14)),
-                ("VSync", ttk.Checkbutton(panel2, variable=vsync, text="On", style="Panel.TCheckbutton")))
-        for n, (caption, control) in enumerate(rows):
-            col, row = n % 3, (n // 3) * 2 + 1
-            label(panel2, caption, bg=PANEL, size=9, color=MUTED).grid(row=row, column=col, sticky="w", pady=(7, 1))
-            control.grid(row=row + 1, column=col, sticky="ew", padx=(0, 10))
-        mode_control = rows[1][1]
-        on_preset()
-        warning = tk.StringVar()
-
-        def display_status(*_):
-            desktop = display.get() == "Borderless"
-            size_control.configure(state="disabled" if desktop else "normal")
-            messages = [graphics.FPS_WARNINGS.get(fps.get(), ""), graphics.MODE_NOTES.get(mode.get(), "")]
-            if desktop:
-                messages.append("Borderless uses the monitor's desktop resolution.")
-            warning.set("\n".join(filter(None, messages)))
-        for value in (fps, mode, display):
-            value.trace_add("write", display_status)
-        display_status()
-        label(panel2, textvariable=warning, bg=PANEL, size=9, color=PEACH, wraplength=760).grid(
-            row=99, column=0, columnspan=3, sticky="w", pady=(9, 0))
-
-        def save():
-            self.guard()
-            values = {"gfx_preset": preset.get(), "fps": fps.get(), "mode": mode.get(), "display": display.get(),
-                      "size": size.get().strip(), "upscale": upscale.get(), "vsync": bool(vsync.get())}
-            if preset.get() == "Custom":
-                values |= {f"gfx_{k}": v.get() for k, v in option_vars.items()}
-            current = dict(self.profiles.profile.get("settings", {}))
-            new = {k: v for k, v in current.items() if not k.startswith("gfx_")} | values
-            validate_settings(self.profiles.settings | new)
-            if fps.get() != graphics.FPS_CHOICES[0] and not messagebox.askokcancel(
-                    "Experimental mode", graphics.FPS_WARNINGS[fps.get()] + "\n\nSave anyway?", parent=self.root):
-                return
-            self.profiles.update_active(settings=new)
-            self.page_state.set("Graphics saved: they apply at the next launch (restart needed).")
-
-        def reset():
-            self.guard()
-            current = dict(self.profiles.profile.get("settings", {}))
-            keep = {k: v for k, v in current.items() if not k.startswith("gfx_") and k not in ("fps", "mode", "display", "size", "upscale", "vsync")}
-            self.profiles.update_active(settings=keep)
-            self.page_state.set("Graphics reset (High, 30 FPS).")
-            self.refresh()
-
-        self.button(self.page, "Save", save, style="Play.TButton").pack(side="left", anchor="n")
-        self.button(self.page, "Reset", reset).pack(side="left", anchor="n", padx=8, pady=4)
-
     def support_page(self):
         self.heading("Support", "Read the logs or prepare a diagnostic report.")
         panel = surface(self.page)
@@ -924,4 +765,5 @@ class Launcher:
             messagebox.showinfo("Liftoff", "Close the game first or wait for the operation to finish.",
                                 parent=self.root)
             return
+        self.action(self.flush)
         self.root.destroy()

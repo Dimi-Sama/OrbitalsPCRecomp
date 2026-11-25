@@ -4,6 +4,8 @@
 import tkinter as tk
 from tkinter import font, ttk
 
+from .core import WINDOWS
+
 # the title screen's palette (neo.py): night, blue, pink, gold
 BG = "#0b0c22"
 RAIL = "#11143a"
@@ -16,6 +18,12 @@ CYAN = "#46e6ff"
 RED = "#ff4f8b"
 PEACH = "#ffc94a"
 DISABLED = "#7a80b8"   # a label of a control that cannot be used now
+SELECTED = "#263080"   # the selected row
+SCALE = 1.0            # pixels of this screen per pixel of the design (96 DPI)
+
+
+def px(n):
+    return round(n * SCALE)
 
 
 def theme(root):
@@ -47,7 +55,11 @@ def theme(root):
         style.map(name, indicatorbackground=[("selected", CYAN)],
                   background=[("active", ground)], foreground=[("disabled", DISABLED)])
     style.configure("TProgressbar", background=CYAN, troughcolor=ENTRY)
-    style.configure("TScrollbar", background=PANEL, troughcolor=BG, arrowcolor=MUTED)
+    style.layout("Vertical.TScrollbar", [("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
+        ("Vertical.Scrollbar.thumb", {"expand": True, "sticky": "nswe"})]})])   # no arrows
+    style.configure("Vertical.TScrollbar", background=LINE, troughcolor=RAIL, bordercolor=BG, lightcolor=LINE, darkcolor=LINE,
+                    gripcount=0, width=px(10))
+    style.map("Vertical.TScrollbar", background=[("disabled", RAIL), ("pressed", CYAN), ("active", "#5a6bd0")])
     root.option_add("*TCombobox*Listbox.background", ENTRY)
     root.option_add("*TCombobox*Listbox.foreground", INK)
     root.option_add("*TCombobox*Listbox.selectBackground", LINE)
@@ -110,6 +122,9 @@ class ScrollPage(tk.Frame):
     def reveal(self, event):
         if isinstance(event.widget, str) or not str(event.widget).startswith(str(self.body) + "."):
             return
+        if getattr(event.widget, "from_mouse", False):   # (a row the mouse selected stays under it)
+            event.widget.from_mouse = False
+            return
         top = event.widget.winfo_rooty() - self.body.winfo_rooty()
         bottom = top + event.widget.winfo_height()
         shown, height = self.view.canvasy(0), self.view.winfo_height()
@@ -118,3 +133,24 @@ class ScrollPage(tk.Frame):
             self.view.yview_moveto(max(0, top - 12) / total)
         elif bottom > shown + height:
             self.view.yview_moveto((bottom + 12 - height) / total)
+
+
+def native_size(root):
+    """The primary monitor's resolution in physical pixels (Windows: not the DPI-scaled size Tk reports), or None."""
+    if WINDOWS:
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            dc = user32.GetDC(0)
+            try:
+                w, h = ctypes.windll.gdi32.GetDeviceCaps(dc, 118), ctypes.windll.gdi32.GetDeviceCaps(dc, 117)   # DESKTOPHORZRES, DESKTOPVERTRES
+            finally:
+                user32.ReleaseDC(0, dc)
+            if w > 0 and h > 0:
+                return w, h
+        except (OSError, AttributeError):
+            pass
+    try:
+        return root.winfo_screenwidth(), root.winfo_screenheight()
+    except tk.TclError:
+        return None

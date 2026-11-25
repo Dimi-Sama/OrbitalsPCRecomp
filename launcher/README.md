@@ -61,12 +61,17 @@ the active profile. ExeFS and RomFS are linked read-only; the original installat
 **Profiles** creates, selects and renames profiles, and archives one after confirmation. To continue a game played from another build,
 use **Import or restore** with its `Orbitals_data/save`; a restore keeps the previous save in `backups/`.
 
+A setting is saved as soon as it is changed and applies at the next launch; what the selected one does stands beside the rows.
+The arrow keys go through the rows and change their values, Ctrl+Tab goes through the tabs, and clicking a value lists all of them.
+A dot marks a value that is not the default. While the game runs the rows are read-only: its own PC settings apply, and are read
+when it closes.
+
 In **Graphics**, choose **High** for the game's TV profile, **Low** for its handheld profile, or **Custom** to choose an internal 3D
 resolution from 960×540 to 1920×1080. The game draws the HUD at 1080p. Set the physical output size in **Windowed** mode. **Borderless**
 uses the monitor's desktop resolution. The same tab sets upscaling, VSync and frame rate. **30 (async replay)** keeps the 30 FPS cap
 with replay on a separate thread. It reduced cinematic slowdown under CPU contention in the Windows test. Settings
-apply per profile at the next launch. See GRAPHICS_SETTINGS.md for the measurements. **Settings** contains volume, the issues URL and
-the optional update check.
+apply per profile at the next launch. See GRAPHICS_SETTINGS.md for the measurements. **General** contains the volume, the title
+screen's animation, the issues URL and the optional update check.
 On Windows, **F1 → 3D resolution (this session)** changes the actual scene resolution while the game is running.
 
 ## Controls

@@ -70,7 +70,7 @@ class TitleScreen(tk.Canvas):
     """menu: [(label, hint, callback, enabled)]; tags: [(title, value, colour)] shown as the 'PLAYER 1'-style chips.
     still(): True while the stars should not move (a game is running); they also stop while nobody can see them."""
 
-    def __init__(self, parent, menu, tags, subtitle="", still=lambda: False, **options):
+    def __init__(self, parent, menu, tags, subtitle="", still=lambda: False, animate=True, **options):
         super().__init__(parent, bg=NIGHT, highlightthickness=0, **options)
         fam = set(font.families())
         self.disp = pick(fam, "Bahnschrift", "DejaVu Sans Condensed", "Liberation Sans Narrow", "Arial Narrow", "TkDefaultFont")
@@ -81,7 +81,7 @@ class TitleScreen(tk.Canvas):
         self.menu, self.tags, self.subtitle, self.still = menu, tags, subtitle, still
         self.sel = next((i for i, m in enumerate(menu) if m[3]), 0)
         self.t = 0; self.running = False; self.cells = []; self.boxes = []
-        self.moves = motion_allowed()
+        self.moves = animate and motion_allowed()
         self.bind("<Configure>", lambda e: self._draw())
         self.bind("<Map>", lambda e: self._start()); self.bind("<Destroy>", lambda e: self._stop())
         self.bind("<Up>", lambda e: self._move(-1)); self.bind("<Down>", lambda e: self._move(1))
@@ -257,38 +257,68 @@ class TitleScreen(tk.Canvas):
         self.timer = self.after(FRAME_MS if moving else STILL_MS, self._tick)
 
 
-def header_strip(parent, title, tabs, current, on_tab, on_back, height=86):
+class HeaderStrip(tk.Canvas):
     """A sub-screen's header in the title screen's style: ◀ BACK, a slanted pink tag with the screen's title, its tabs (page, label);
-    the current tab underlined. Escape (bound by the launcher) also goes back."""
-    c = tk.Canvas(parent, bg=NIGHT, highlightthickness=0, height=height)
-    fam = set(font.families())
-    disp = pick(fam, "Bahnschrift", "DejaVu Sans Condensed", "Liberation Sans Narrow", "Arial Narrow", "TkDefaultFont")
-    f_title, f_tab, f_back = (disp, 24, "bold"), (disp, 13, "bold"), (disp, 12, "bold")
+    the current tab underlined. Left and right go through BACK and the tabs, Enter takes one; down goes to the page (on_down)."""
 
-    def draw(_e=None):
-        c.delete("all")
-        w = max(c.winfo_width(), 400)
-        c.create_polygon(0, 0, w * 0.42, 0, w * 0.42 - 30, height, 0, height, fill=BLUE_D, outline="")
-        c.create_line(w * 0.42, 0, w * 0.42 - 30, height, fill=GOLD, width=2)
-        c.create_line(w * 0.42 + 10, 0, w * 0.42 - 20, height, fill=INK, width=3)
-        back = c.create_text(26, height / 2, text="◀  BACK", font=f_back, fill=CYAN, anchor="w")
-        c.tag_bind(back, "<Button-1>", lambda _e: on_back())
-        c.tag_bind(back, "<Enter>", lambda _e: c.configure(cursor="hand2")); c.tag_bind(back, "<Leave>", lambda _e: c.configure(cursor=""))
-        tw = font.Font(font=f_title).measure(title) + 40
+    def __init__(self, parent, title, tabs, current, on_tab, on_back, on_down=lambda: None, height=86):
+        super().__init__(parent, bg=NIGHT, highlightthickness=0, height=height, takefocus=1)
+        fam = set(font.families())
+        disp = pick(fam, "Bahnschrift", "DejaVu Sans Condensed", "Liberation Sans Narrow", "Arial Narrow", "TkDefaultFont")
+        self.f_title = font.Font(family=disp, size=24, weight="bold"); self.f_tab = font.Font(family=disp, size=13, weight="bold")
+        self.f_back = font.Font(family=disp, size=12, weight="bold")
+        self.title, self.tabs, self.current, self.tall = title, tabs, current, height
+        self.places = [on_back] + [lambda p=page: on_tab(p) for page, _ in tabs]
+        self.cursor = next((i + 1 for i, (page, _) in enumerate(tabs) if page == current), 0)
+        self.focused = False; self.boxes = []
+        self.bind("<Configure>", lambda e: self.draw())
+        self.bind("<FocusIn>", lambda e: self._focus(True)); self.bind("<FocusOut>", lambda e: self._focus(False))
+        self.bind("<Left>", lambda e: self._move(-1)); self.bind("<Right>", lambda e: self._move(1))
+        self.bind("<Down>", lambda e: on_down())
+        self.bind("<Return>", lambda e: self.places[self.cursor]()); self.bind("<space>", lambda e: self.places[self.cursor]())
+        self.bind("<Motion>", lambda e: hand(self, self._at(e) is not None))
+        self.bind("<Button-1>", self._click)
+
+    def _at(self, event):
+        return next((i for i, (left, right) in enumerate(self.boxes) if left <= event.x <= right), None)
+
+    def _click(self, event):
+        at = self._at(event)
+        if at is not None:
+            self.places[at]()
+
+    def _focus(self, on):
+        self.focused = on
+        self.draw()
+
+    def _move(self, direction):
+        self.cursor = max(0, min(len(self.places) - 1, self.cursor + direction))
+        self.draw()
+
+    def draw(self):
+        self.delete("all")
+        w, h = max(self.winfo_width(), 400), self.tall
+        back_w = self.f_back.measure("◀  BACK")
+        tw = self.f_title.measure(self.title) + 40
         x0 = 140
-        c.create_polygon(x0, 20, x0 + tw, 20, x0 + tw - 12, height - 20, x0 - 12, height - 20, fill=PINK, outline="")
-        c.create_text(x0 + 10, height / 2, text=title, font=f_title, fill=INK, anchor="w")
-        x = w * 0.42 + 40
-        for page, lab in tabs:
-            on = page == current
-            t = c.create_text(x, height / 2, text=lab, font=f_tab, fill=INK if on else MUTED, anchor="w")
-            lw = font.Font(font=f_tab).measure(lab)
+        split = max(w * 0.42, x0 + tw + 50)   # right of the title, however wide
+        self.create_polygon(0, 0, split, 0, split - 30, h, 0, h, fill=BLUE_D, outline="")
+        self.create_line(split, 0, split - 30, h, fill=GOLD, width=2)
+        self.create_line(split + 10, 0, split - 20, h, fill=INK, width=3)
+        self.create_text(26, h / 2, text="◀  BACK", font=self.f_back, fill=CYAN, anchor="w")
+        self.boxes = [(16, 26 + back_w + 10)]
+        self.create_polygon(x0, 20, x0 + tw, 20, x0 + tw - 12, h - 20, x0 - 12, h - 20, fill=PINK, outline="")
+        self.create_text(x0 + 10, h / 2, text=self.title, font=self.f_title, fill=NIGHT, anchor="w")
+        x = split + 40
+        for page, lab in self.tabs:
+            on = page == self.current
+            lw = self.f_tab.measure(lab)
+            self.create_text(x, h / 2, text=lab, font=self.f_tab, fill=INK if on else MUTED, anchor="w")
             if on:
-                c.create_rectangle(x, height / 2 + 14, x + lw, height / 2 + 17, fill=CYAN, outline="")
-            c.tag_bind(t, "<Button-1>", lambda _e, p=page: on_tab(p))
-            c.tag_bind(t, "<Enter>", lambda _e: c.configure(cursor="hand2")); c.tag_bind(t, "<Leave>", lambda _e: c.configure(cursor=""))
+                self.create_rectangle(x, h / 2 + 14, x + lw, h / 2 + 17, fill=CYAN, outline="")
+            self.boxes.append((x - 12, x + lw + 12))
             x += lw + 34
-        c.create_line(0, height - 1, w, height - 1, fill=LINE_C, width=1)
-
-    c.bind("<Configure>", draw)
-    return c
+        if self.focused:
+            left, right = self.boxes[self.cursor]
+            self.create_rectangle(left, h / 2 - 22, right, h / 2 + 22, outline=CYAN, width=2)
+        self.create_line(0, h - 1, w, h - 1, fill=LINE_C, width=1)
