@@ -38,6 +38,8 @@ app="$work/OrbitalsPCRecomp.AppDir"; mkdir -p "$app/usr/kit" "$app/usr"
 tar xzf "$kit" -C "$app/usr/kit" --strip-components=1
 [[ -f "$app/usr/kit/launcher/__main__.py" && -f "$app/usr/kit/VERSION" ]] || { echo "not an Orbitals PC Recomp Linux kit: $kit" >&2; exit 1; }
 [[ "$(tr -d '\r\n' < "$app/usr/kit/VERSION")" == "$version" ]] || { echo "the kit is not version $version" >&2; exit 1; }
+# RecompLauncher reads its setup from /recomplauncher.json in the AppImage (the kit's own copy, unchanged)
+[[ -f "$app/usr/kit/recomplauncher.json" ]] && cp "$app/usr/kit/recomplauncher.json" "$app/recomplauncher.json"
 tar xzf "$cache/python.tar.gz" -C "$app/usr"   # -> usr/python
 "$app/usr/python/bin/python3" -c "import tkinter, sys; assert sys.version_info >= (3, 12)" 2>/dev/null \
   || echo "note: the bundled Python's Tk could not be checked here (no display or libX11): it is checked when the AppImage starts" >&2

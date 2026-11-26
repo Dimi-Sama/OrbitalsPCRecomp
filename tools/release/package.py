@@ -6,7 +6,7 @@
 
 Archives:
   OrbitalsPCRecomp-<v>-source.zip / .tar.gz      git archive of the public commit
-  OrbitalsPCRecomp-<v>-windows-x64.zip           the same source tree + the prebuilt Win32 runtime (bin/runtime_win64_win32.exe) and SDL3.dll:
+  OrbitalsPCRecomp-<v>-windows-x64.zip           the same source tree (less Orbitals-Launcher.sh) + the prebuilt Win32 runtime (bin/runtime_win64_win32.exe) and SDL3.dll:
                                                  tools/release/setup-windows.ps1 then skips building the runtime; the game's code is still
                                                  recompiled on the user's PC from their copy
   OrbitalsPCRecomp-<v>-linux-x64.tar.gz          the same source tree + the prebuilt Linux runtime (ELF, x11 backend, for the Steam Deck)
@@ -109,7 +109,8 @@ def main():
             extra.append(('bin/SDL3.dll', 0o644, open(a.sdl3, 'rb').read()))
             lic = os.path.join(os.path.dirname(a.sdl3), 'SDL3-LICENSE.txt')
             if os.path.isfile(lic): extra.append(('bin/SDL3-LICENSE.txt', 0o644, open(lic, 'rb').read()))
-        files = src + extra; audit('the Windows kit', files)
+        # without the Linux launcher script, the start.program list of recomplauncher.json finds Orbitals-Launcher.bat on Windows
+        files = [f for f in src if f[0] != 'Orbitals-Launcher.sh'] + extra; audit('the Windows kit', files)
         nm = f'OrbitalsPCRecomp-{a.version}-windows-x64.zip'; outs.append(write_zip(nm, files)); record(nm, files)
     if a.linux_runtime:
         files = src + [('bin/runtime_linux_x11', 0o755, open(a.linux_runtime, 'rb').read())]; audit('the Linux kit', files)
