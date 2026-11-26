@@ -46,6 +46,32 @@ static void orbitals_widget_install(const SwrModInfo* mod){
 }
 #endif
 
+/* display_resolution (TV mode): the Switch 2 platform code sets r.SetRes to 1920x1080 when docked, by code, which outranks
+   every ini (an Engine.ini or GameUserSettings.ini override is read and ignored). Its sink (main+0x35d22b4) parses the string
+   with this function (string, &x, &y, &window mode) before it stores GSystemResolution (main+0x9c84a00) and resizes the
+   viewport; a 1920x1080 result becomes the TV size display_resolution asks for. The game then makes its swap chain, HUD and
+   composite at that size; its 3D keeps its own size (the internal 3D resolution setting) */
+enum { PARSE_RES=0x35d1740 };
+static GuestFn parse_res_orig;
+static void orbitals_parse_res(CPU* c,u64 pc){
+  u64 px=c->x[1], py=c->x[2];
+  parse_res_orig(c,pc);
+  if(!(c->x[0]&1) || !guest_span_writable(px,4,4) || !guest_span_writable(py,4,4)) return;
+  if(gr32(px)!=1920 || gr32(py)!=1080) return;
+  u32 h=(u32)g_opt_display_h, w=h*16/9;
+  memcpy(GP(px),&w,4); memcpy(GP(py),&h,4);
+  static int said; if(said<4){ said++; LOG("Orbitals: system resolution 1920x1080 -> %ux%u (display_resolution)\n",w,h); }
+}
+static void orbitals_parse_res_install(const SwrModInfo* mod){
+  if(!g_opt_display_h || !g_opt_docked) return;
+  u64 pc=mod->base+PARSE_RES;
+  if(pc<g_code_lo || pc>=g_code_hi || gr32(pc)!=0xd503237fu || gr32(pc+4)!=0xd10243ffu) return;   /* pacibsp; sub sp, sp, #0x90 */
+  GuestFn* entry=&g_disp[(pc-g_code_lo)/4];
+  if(!*entry) return;
+  parse_res_orig=*entry; *entry=orbitals_parse_res;
+  LOG("Orbitals: TV resolution %dp bound to r.SetRes\n",g_opt_display_h);
+}
+
 void orbitals_scene_init(void){
   for(u32 i=0;i<g_mod->nmods;i++){
     const SwrModInfo* mod=&g_mod->mods[i];
@@ -53,6 +79,7 @@ void orbitals_scene_init(void){
 #ifdef _WIN32
     orbitals_widget_install(mod);
 #endif
+    orbitals_parse_res_install(mod);
     if(mod->size<0x9c48a38 || mod->text_size<0x2ddc5c8) return;
     u64 load=mod->base+0x2ddc5bc;
     if(gr32(load)!=0x90037368 || gr32(load+4)!=0xf9451908 || gr32(load+8)!=0xbd400100) return;

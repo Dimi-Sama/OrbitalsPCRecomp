@@ -13,6 +13,10 @@ settings, unchanged.
 - **Unreal scalability groups** (`sg.*`): the game reads Unreal's user config layer `Orbitals/Saved/Config/Switch2/GameUserSettings.ini`
   from its RomFS; the runtime serves it from `<game>/Orbitals_data/romfs_overlay` (the launcher writes it in the session folder only).
   A scalability group is a *game setting*, which outranks the Switch 2 device profile's console variables.
+- **TV resolution** (`display_resolution` in `Orbitals.ini`, TV mode only): 1440, 1620, 1800 or 2160 makes the game build its swap
+  chain, HUD, text and final composite at 2560×1440 … 3840×2160 instead of the console's 1920×1080. The Switch 2 platform code
+  sets `r.SetRes` to 1920×1080 by code when docked (an `Engine.ini` or `GameUserSettings.ini` override is read and ignored); the
+  runtime rewrites the result of its parser (`orbitals_settings.c`). The 3D keeps its own size (the internal 3D resolution above).
 - **Window output size** sets the window's client area in physical pixels (540p to 4K in the preset list). Borderless uses the monitor's
   desktop resolution. The runtime fits the 1080p composite to the output and can use bilinear, sharp or FSR 1 EASU when enlarging it.
 
@@ -23,7 +27,7 @@ settings, unchanged.
 | `r.ScreenPercentage`, `r.DynamicRes.Min/MaxScreenPercentage` in `Engine.ini` `[SystemSettings]` / `[ConsoleVariables]` / device profile | ignored: the Switch 2 device profile sets them at a higher priority, and the game sets its 3D size from code (laptop and Deck: views stay 960×1080 / 800×900) |
 | `sg.ResolutionQuality=50` (`GameUserSettings.ini`) | ignored: views stay 960×1080 (`sg-res50`) |
 | `-ExecCmds`, `-dpcvars` on the command line | ignored by the shipping build |
-| Native 1440p and 4K | The higher sizes are available for output. The game still composites at 1920×1080. |
+| Native 1440p and 4K through `r.SetRes` / `GameUserSettings.ini` | ignored: set by the platform code when docked. `display_resolution` (above) does it in the runtime. |
 | 120 FPS / unlimited | not offered: the 60 mode already presents every vblank; co-op stays below 60 on every PC tested, so a higher mode would only add risk |
 
 ## Unreal scalability groups (RTX 5070 Laptop, co-op, `ue_fps=60`, 200–245 s)
