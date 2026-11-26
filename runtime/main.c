@@ -230,6 +230,7 @@ static const char* ini_get(const char* k, const char* def){ for(int i=0;i<g_ini_
 
 static void ini_apply(const char* k, const char* v){
     if(!strcmp(k,"docked")) g_opt_docked=atoi(v);
+    else if(!strncmp(k,"gyro",4)){ extern void orbitals_input_ini(const char*, const char*); orbitals_input_ini(k,v); }
     else if(!strcmp(k,"language")) g_opt_lang=atoi(v);
     else if(!strcmp(k,"keyboard_text")){ extern char g_opt_swkbd[64]; snprintf(g_opt_swkbd,sizeof g_opt_swkbd,"%s",v); }
     else if(!strcmp(k,"log")) g_verbose=atoi(v);
@@ -316,6 +317,15 @@ static const IniOpt INI_INPUT[]={
   {"mouse_sensitivity","1.00","Mouse sensitivity: F1 10%..500% goes from 5x to 1250x speed, on a curve so 100% stays close to before"},
   {"mouse_invert","0","Mouse inversion: 0 = normal, 1 = horizontal, 2 = vertical, 3 = both"},
   {"keyboard_player","1","Keyboard and mouse: 1 = player 1, 2 = player 2 when player 1 has a gamepad"},
+  {"gyro","off","Orbitals gyro aiming (motion sensors of a DualSense or other SDL pad): off, always, aim = while the left trigger is held"},
+  {"gyro_sensitivity_x","1.5","Gyro horizontal sensitivity: camera degrees per degree the controller turns"},
+  {"gyro_sensitivity_y","1.5","Gyro vertical sensitivity: camera degrees per degree the controller tilts"},
+  {"gyro_button","touchpad","Gyro button: touchpad, mute, l3, r3, paddle_left, paddle_right or none"},
+  {"gyro_button_mode","pause","pause = the gyro stops while the button is held, toggle = each press turns it off / on.\n;   Holding the button 3 s with the controller lying still calibrates it (stored per controller model)"},
+  {"gyro_tightening","3","Gyro: slow turns under this many degrees per second are softened (hand shake), 0 = off"},
+  {"gyro_invert","0","Gyro inversion: 0 = normal, 1 = horizontal, 2 = vertical, 3 = both"},
+  {"gyro_calibrate","0","1 = calibrate the gyro the next time the controller lies still for 2 s, then store it (sets itself back to 0)"},
+  {"gyro_delivery","samples","samples = integrate sensor samples, latest = hold latest velocity on camera clock (50 ms expiry)"},
   {NULL,NULL,NULL}};
 
 static const IniOpt INI_GRAPHICS[]={
