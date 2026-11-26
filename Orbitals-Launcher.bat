@@ -4,6 +4,8 @@ rem downloads for the recompiler has no Tk. Nothing else is installed here: the 
 rem the build tools into this folder, each checked against its pinned SHA-256.
 setlocal
 cd /d "%~dp0"
+if /i "%~1"=="--prepare" goto windowless
+if /i "%~1"=="--play" goto windowless
 set "PYL="
 for %%C in ("py -3.14" "py -3.13" "py -3.12" "python") do (
   if not defined PYL (
@@ -35,3 +37,21 @@ echo Install Python 3.12+ from https://www.python.org/downloads/windows/ (keep "
 echo then run Orbitals-Launcher.bat again. Without the launcher: see README.md, "Windows - one command".
 pause
 exit /b 1
+:windowless
+rem RecompLauncher (recomplauncher.json, launcher\recomplauncher.py): setup and play without a window need no Tk, so the Python that
+rem Install.bat puts in this folder does, or any Python 3.12+. --prepare runs Install.bat for it when there is none (the setup's first step).
+set "PYL="
+if exist "python\python.exe" set "PYL=python\python.exe"
+for %%C in ("py -3.14" "py -3.13" "py -3.12" "python") do (
+  if not defined PYL (
+    %%~C -c "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)" >nul 2>nul && set "PYL=%%~C"
+  )
+)
+if not defined PYL if /i "%~1"=="--prepare" call Install.bat <nul
+if not defined PYL if exist "python\python.exe" set "PYL=python\python.exe"
+if not defined PYL (
+  echo Python is missing: run Install.bat in this folder, then try again.
+  exit /b 1
+)
+%PYL% -B -m launcher %*
+exit /b %errorlevel%

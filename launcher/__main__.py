@@ -1,5 +1,11 @@
 # SwitchRecomp - Copyright 2026 MZ Labs
 
+import sys
+
+if sys.argv[1:2] in (["--prepare"], ["--play"]):   # RecompLauncher's setup and play, without a window or Tk (launcher/recomplauncher.py)
+    from .recomplauncher import main as windowless
+    raise SystemExit(windowless(sys.argv[1:]))
+
 import argparse
 import tkinter as tk
 from pathlib import Path

@@ -70,7 +70,12 @@ say() {
   elif command -v zenity >/dev/null 2>&1; then zenity --error --title="Orbitals PC Recomp" --width=480 --text="$1"
   else echo "$1" >&2; fi
 }
-if [[ ! -f "$kit/.complete" ]]; then
+if [[ "${RECOMPLAUNCHER:-}" == 1 && -w "$here/usr/kit" ]]; then
+  # RecompLauncher unpacks the AppImage into a folder of its own and updates it there: the kit runs in place, nothing is copied, and
+  # its setup and play (recomplauncher.json, launcher/recomplauncher.py) use the bundled Python, with no window
+  kit="$here/usr/kit"
+  case "${1:-}" in --prepare|--play) cd "$kit" && exec "$here/usr/python/bin/python3" -B -m launcher "$@" ;; esac
+elif [[ ! -f "$kit/.complete" ]]; then
   mkdir -p "$data" && rm -rf "$kit.part" && cp -a "$here/usr/kit" "$kit.part" && rm -rf "$kit" && mv "$kit.part" "$kit" && touch "$kit/.complete" \
     || { say "Orbitals PC Recomp could not copy its files to $kit (disk full or not writable?)."; exit 1; }
 fi

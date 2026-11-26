@@ -770,6 +770,9 @@ def validate_settings(settings):
 # unpacked beside this kit (download_update); the player's game is then recompiled by the new kit (outdated_release).
 UPDATE_REPOSITORY = "Dimi-Sama/OrbitalsPCRecomp"
 RELEASES_URL = f"https://github.com/{UPDATE_REPOSITORY}/releases"
+# Started by RecompLauncher (RECOMPLAUNCHER=1): it installs every release itself, so no update check, download or switch to another kit
+MANAGED = os.environ.get("RECOMPLAUNCHER") == "1"
+MANAGED_TEXT = "RecompLauncher installs the updates of this copy: check for them there."
 
 
 def version_tuple(text):
@@ -786,6 +789,8 @@ def version_tuple(text):
 def check_update(current=VERSION, repository=None, opener=None):
     """{"latest", "url", "newer", "notes"} of the repository's latest release, or None when no repository is configured.
     Raises LauncherError when GitHub cannot be reached or answers something unexpected."""
+    if MANAGED:
+        raise LauncherError(MANAGED_TEXT)
     repository = UPDATE_REPOSITORY if repository is None else repository
     if not repository:
         return None
@@ -837,6 +842,8 @@ def download_update(info, parent=None, on_progress=lambda done, total: None, ope
     """Download the new kit of `info` (check_update), check its SHA-256 against the release's SHA256SUMS.txt and unpack it in
     `parent` (default: the folder holding this kit). Returns the new kit's folder; an existing one is reused, nothing is
     overwritten, and this kit, the game and the saves are left as they are."""
+    if MANAGED:
+        raise LauncherError(MANAGED_TEXT)
     version = info["latest"].lstrip("vV")
     name = kit_archive(version, platform)
     assets = info.get("assets") or {}
@@ -907,6 +914,8 @@ def unpack_kit(archive, dest, name):
 def launch_kit(kit):
     """Start the launcher of another kit (an update just unpacked) in its own folder, with this Python (it has Tk; the Python
     bundled for the recompiler has none)."""
+    if MANAGED:
+        raise LauncherError(MANAGED_TEXT)
     options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS else {"start_new_session": True}
     subprocess.Popen([sys.executable, "-B", "-m", "launcher"], cwd=kit, **options)
 
