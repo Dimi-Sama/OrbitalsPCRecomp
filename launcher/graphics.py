@@ -47,6 +47,12 @@ MODE_NOTES = {
     "Portable": "Handheld 3D resolution: the game renders its 3D at 1600×900 (2 × 800×900 in co-op), then the picture at 1080p.",
     **{size: f"{size.replace('x', '×')} scene resolution with the TV profile. The game composites the HUD at 1080p." for size in RENDER_SCALE},
 }
+# TV resolution (the launcher's "tv_resolution" setting): Orbitals.ini display_resolution, the TV size the game is told about in TV mode.
+# The game then makes its picture (HUD, text, final image) at that size instead of the console's 1920x1080; the 3D keeps its own size.
+TV_RESOLUTIONS = {"1080p (console)": 0, "1440p": 1440, "1620p": 1620, "1800p": 1800, "2160p (4K)": 2160}
+TV_CHOICES = tuple(TV_RESOLUTIONS)
+TV_NOTE = ("The size of the game's own picture in TV mode: menus, text and the final image are made at this size. The console uses 1080p. "
+           "Higher costs GPU time: on a 4K monitor 1800p is a good middle.")
 # Output sizes are the physical window/swapchain dimensions.
 OUTPUT_SIZES = ("960x540", "1280x720", "1280x800", "1600x900", "1920x1080", "2560x1440", "3840x2160")
 

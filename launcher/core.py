@@ -41,7 +41,7 @@ DEFAULT_SETTINGS = {
     "mode": "Portable", "display": "Windowed", "size": "1280x720",
     "upscale": "Standard", "vsync": True, "volume": 100, "keyboard": 1,
     "mouse_camera": None, "mouse_sensitivity": None, "vibration": True,
-    "fps": "30 (reference)", "gfx_preset": "High",
+    "fps": "30 (reference)", "gfx_preset": "High", "tv_resolution": "1080p (console)",
 }
 # setting values saved by the launcher's earlier French interface, read as today's
 LEGACY_VALUES = {"Fenêtré": "Windowed", "Sans bordure": "Borderless",
@@ -776,7 +776,8 @@ def validate_settings(settings):
             or settings["mouse_camera"] is not None and type(settings["mouse_camera"]) is not bool
             or settings["mouse_sensitivity"] is not None and (
                 type(settings["mouse_sensitivity"]) is not int or not 10 <= settings["mouse_sensitivity"] <= 500)
-            or settings["fps"] not in graphics.FPS_MODES):
+            or settings["fps"] not in graphics.FPS_MODES
+            or settings["tv_resolution"] not in graphics.TV_RESOLUTIONS):
         raise LauncherError("A profile setting is invalid.")
     try:
         graphics.validate(graphics_settings(settings))
@@ -1143,8 +1144,10 @@ def launch(game, profiles):
         ini = game.root / "Orbitals.ini"
         text = ini.read_text(encoding="utf-8-sig", errors="replace") if ini.is_file() else ""
         fps = graphics.FPS_MODES[settings["fps"]]
-        text = re.sub(r"(?m)^\s*ue_fps\s*=.*$", "", text)
-        write_text(run / "Orbitals.ini", apply_graphics(run, text.rstrip() + f"\nue_fps={fps}\n", settings))
+        text = re.sub(r"(?m)^\s*(ue_fps|display_resolution)\s*=.*$", "", text)
+        tv = graphics.TV_RESOLUTIONS[settings["tv_resolution"]]
+        text = text.rstrip() + f"\nue_fps={fps}\n" + (f"display_resolution={tv}\n" if tv else "")
+        write_text(run / "Orbitals.ini", apply_graphics(run, text, settings))
         with (run / "console.log").open("wb") as console:
             process = subprocess.Popen(args, cwd=run, env=env, stdout=console, stderr=subprocess.STDOUT,
                                        stdin=subprocess.DEVNULL)

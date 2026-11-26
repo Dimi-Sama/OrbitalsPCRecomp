@@ -11,7 +11,7 @@ from .rows import Rows
 
 PRESET_OF_MODE_LABELS = {"TV": "1920×1080 (TV)", "Portable": "1600×900 (handheld)"}
 REMOVED = object()   # a setting taken out of the profile: its default again
-DISPLAY_KEYS = ("fps", "mode", "display", "size", "upscale", "vsync")
+DISPLAY_KEYS = ("fps", "mode", "display", "size", "upscale", "vsync", "tv_resolution")
 
 
 def mode_label(mode):
@@ -76,6 +76,7 @@ class GraphicsPage(SettingsPage):
         rows.switch("VSync", describe="The picture waits for the monitor, so it does not tear. Off: the lowest delay.",
                     enabled=free, **setting("vsync"))
         rows.group("Display")
+        rows.choice("TV resolution", graphics.TV_CHOICES, describe=graphics.TV_NOTE, enabled=free, **setting("tv_resolution"))
         rows.choice("Display", ("Windowed", "Borderless"), describe="Borderless fills the monitor at the desktop's resolution.",
                     enabled=free, **setting("display"))
         rows.choice("Window size", lambda: graphics.output_sizes(native_size(self.app.root)), describe=self.size_text,
