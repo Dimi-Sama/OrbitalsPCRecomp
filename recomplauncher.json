@@ -1,0 +1,138 @@
+{
+  "$schema": "https://recomplauncher.com/schema/recomplauncher.json",
+  "format": 1,
+  "name": "Liftoff (Orbitals PC Recomp)",
+  "repo": "Dimi-Sama/OrbitalsPCRecomp",
+  "inputs": [
+    {
+      "id": "game",
+      "label": "Your copy of Orbitals for Nintendo Switch 2, extracted: the folder with exefs and romfs.",
+      "formats": [{ "type": "folder" }],
+      "check": { "file": "romfs/Orbitals/Content/Paks/Orbitals-Switch2.utoc" }
+    }
+  ],
+  "start": {
+    "program": ["OrbitalsPCRecomp-x86_64.AppImage", "Orbitals-Launcher.sh", "Orbitals-Launcher.bat"],
+    "args": ["--play", "--data", "{data}"]
+  },
+  "prepare": {
+    "program": ["OrbitalsPCRecomp-x86_64.AppImage", "Orbitals-Launcher.sh", "Orbitals-Launcher.bat"],
+    "args": ["--prepare", "--game={input:game}", "--data", "{data}"],
+    "label": "Recompiling your copy of the game: 20 to 60 minutes, once. The build tools are downloaded on Windows.",
+    "done": [
+      "{data}/games/build.json",
+      "{data}/games/Orbitals/Orbitals_data/romfs/Orbitals/Content/Paks/Orbitals-Switch2.utoc"
+    ],
+    "keeps_copy": true,
+    "options": [
+      {
+        "id": "shaders",
+        "label": "Prepare the shaders",
+        "note": "About 15 more minutes, so the first playthrough doesn't pause to translate them.",
+        "args": ["--shaders"]
+      }
+    ]
+  },
+  "system": {
+    "windows": { "version": "10", "graphics": { "vulkan": "1.3" } },
+    "linux": { "graphics": { "vulkan": "1.3" } }
+  },
+  "saves": ["{data}/launcher/profiles"],
+  "folders": {
+    "game": [{ "path": "{data}/games/Orbitals" }],
+    "saves": [{ "path": "{data}/launcher/profiles" }],
+    "logs": [{ "path": "{data}/launcher/logs" }],
+    "shaders": [{ "path": "{data}/launcher/shader-cache" }]
+  },
+  "settings": [
+    {
+      "id": "preset", "label": "Graphics", "in": "args",
+      "help": "High is the game's own rendering, 3D at 1080p. Low draws the 3D at 900p and Performance at 720p, for slower GPUs and handhelds.",
+      "choices": [
+        { "label": "Game's option", "args": [] },
+        { "label": "High", "args": ["--set=gfx_preset=High"] },
+        { "label": "Low", "args": ["--set=gfx_preset=Low"] },
+        { "label": "Performance", "args": ["--set=gfx_preset=Performance"] }
+      ]
+    },
+    {
+      "id": "display", "label": "Window", "in": "args",
+      "help": "Borderless fills the screen at your desktop's resolution. Windowed uses Window size.",
+      "choices": [
+        { "label": "Game's option", "args": [] },
+        { "label": "Windowed", "args": ["--set=display=Windowed"] },
+        { "label": "Borderless", "args": ["--set=display=Borderless"] }
+      ]
+    },
+    {
+      "id": "size", "label": "Window size", "in": "args",
+      "help": "The size of the game's window in Windowed mode.",
+      "choices": [
+        { "label": "Game's option", "args": [] },
+        { "label": "1280 x 720", "args": ["--set=size=1280x720"] },
+        { "label": "1600 x 900", "args": ["--set=size=1600x900"] },
+        { "label": "1920 x 1080", "args": ["--set=size=1920x1080"] },
+        { "label": "2560 x 1440", "args": ["--set=size=2560x1440"] },
+        { "label": "3840 x 2160", "args": ["--set=size=3840x2160"] }
+      ]
+    },
+    {
+      "id": "fps", "label": "Frame rate", "in": "args",
+      "help": "30 is the game's own pace. Async replay can help cutscenes on busy CPUs. 60 is experimental: co-op may stay below 60, and timing glitches are possible.",
+      "choices": [
+        { "label": "Game's option", "args": [] },
+        { "label": "30", "args": ["--set=fps=30 (reference)"] },
+        { "label": "30, async replay", "args": ["--set=fps=30 (async replay)"] },
+        { "label": "60 (experimental)", "args": ["--set=fps=60 (experimental)"] }
+      ]
+    },
+    {
+      "id": "upscale", "label": "Upscaling", "in": "args",
+      "help": "How the picture is enlarged to a window bigger than 1080p: smooth, sharp, or AMD FSR 1.",
+      "choices": [
+        { "label": "Game's option", "args": [] },
+        { "label": "Standard", "args": ["--set=upscale=Standard"] },
+        { "label": "Sharp", "args": ["--set=upscale=Sharp"] },
+        { "label": "FSR 1", "args": ["--set=upscale=FSR1"] }
+      ]
+    },
+    {
+      "id": "vsync", "label": "V-Sync", "in": "args",
+      "help": "Waits for your screen's refresh, so the picture doesn't tear.",
+      "choices": [
+        { "label": "Game's option", "args": [] },
+        { "label": "On", "args": ["--set=vsync=true"] },
+        { "label": "Off", "args": ["--set=vsync=false"] }
+      ]
+    },
+    {
+      "id": "volume", "label": "Volume", "in": "args",
+      "help": "The game's sound, from 0 to 100.",
+      "slider": { "min": 0, "max": 100, "step": 5, "format": "%.0f" },
+      "args": ["--set=volume={value}"]
+    },
+    {
+      "id": "keyboard", "label": "Keyboard and mouse", "in": "args", "group": "Controls",
+      "help": "Player 2 lets a second player join on the keyboard and mouse, with a controller as Player 1.",
+      "choices": [
+        { "label": "Game's option", "args": [] },
+        { "label": "Player 1", "args": ["--set=keyboard=1"] },
+        { "label": "Player 2", "args": ["--set=keyboard=2"] }
+      ]
+    },
+    {
+      "id": "mouse_camera", "label": "Mouse camera", "in": "args", "group": "Controls",
+      "help": "Turns the camera with the mouse from the start. F2 switches it during play.",
+      "choices": [
+        { "label": "Game's option", "args": [] },
+        { "label": "On", "args": ["--set=mouse_camera=true"] },
+        { "label": "Off", "args": ["--set=mouse_camera=false"] }
+      ]
+    }
+  ],
+  "actions": [
+    { "id": "saves", "label": "Saves", "help": "Your save profiles.", "open": "saves" },
+    { "id": "logs", "label": "Logs", "help": "The launcher's log and the last session's game log.", "open": "logs" },
+    { "id": "shaders", "label": "Shader cache", "help": "Shaders the game has translated. Clearing it only helps if graphics look wrong after an update; the next sessions translate them again.", "clear": "shaders" }
+  ]
+}
