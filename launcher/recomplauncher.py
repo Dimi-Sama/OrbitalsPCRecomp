@@ -105,7 +105,7 @@ def prepare(args, data):
     if game_dir.is_dir():
         unlink_copy(game_dir)
     (games / BUILD).unlink(missing_ok=True)
-    progress(0, "Recompiling your copy of Orbitals (20 to 60 minutes, once)")
+    progress(0, "Recompiling your copy of Orbitals (20 to 60 minutes)")
     last = [0.0, None]
 
     def step(n, total, text):

@@ -35,6 +35,15 @@ class WindowlessTest(unittest.TestCase):
         self.assertEqual((code, lines[-1]), (0, "progress 1.000 Already built"))
         install.assert_not_called()
 
+    def test_already_built_from_the_copy_it_is_given(self):   # RecompLauncher always passes --game={input:game}
+        build_fixture(self.games / "Orbitals")
+        source = core.game_source(core.installation(self.games / "Orbitals"))
+        (self.games / recomplauncher.BUILD).write_text(json.dumps({"release": VERSION, "source": str(source)}), encoding="utf-8")
+        with patch.object(recomplauncher, "install_from_files") as install:
+            code, lines = self.run_main("--prepare", f"--game={source}", "--data", str(self.data))
+        self.assertEqual((code, lines[-1]), (0, "progress 1.000 Already built"))
+        install.assert_not_called()
+
     def test_a_new_release_builds_again_and_writes_its_version_last(self):
         copy = self.root / "my copy"
         build_fixture(copy)
