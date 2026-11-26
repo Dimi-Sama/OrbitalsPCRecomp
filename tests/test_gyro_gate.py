@@ -14,6 +14,11 @@ RUNTIME = ROOT / "runtime" / "orbitals_input.c"
 CLASS_CHECK = "  if(!gyro_isa(pc,CLS_PLAYER_CONTROLLER)) return GATE_NOT_GAME_CONTROLLER;   /* before any game field */\n"
 EXTENDED_READ = "  q->cinematic=*GP(pc+PC_CINEMATIC); q->main=gr64(pc+PC_MAIN_CHARACTER); q->controlled=gr64(pc+PC_CONTROLLED_ACTOR);\n"
 MUTATIONS = {
+    "focus loss retains pending turn": [("if(!allowed) acc_clear(s);", "if(0) acc_clear(s);")],
+    "gyro enabled by default": [("} G={0,1.5f", "} G={1,1.5f")],
+    "default sensitivity changed": [("} G={0,1.5f,1.5f", "} G={0,2.0f,1.5f")],
+    "default tightening changed": [("20,0,3.0f,0,0,0,0,0.0f,0", "20,0,0.0f,0,0,0,0,0.0f,0")],
+
     "latest expiry removed": [("now-Acc[id].rate_ns<=50000000ull", "1")],
     "latest tick cap removed": [("fmin((now-taken)/1e9,0.05)", "((now-taken)/1e9)")],
     "latest sensitivity ignored": [("Acc[s].rate_yaw=dyaw/dt", "Acc[s].rate_yaw=dyaw/dt/G.sens_x")],

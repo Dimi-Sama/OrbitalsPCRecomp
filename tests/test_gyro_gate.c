@@ -688,7 +688,26 @@ static void test_latest_boundaries(void){
   orbitals_input_ini("gyro_delivery","samples");CHECK(!G.latest,"samples rollback ignored");
 }
 
+static void test_focus_loss_clears_pending(void){
+  for(int latest=0;latest<=1;latest++){
+    reset(); G.latest=latest; G.tightening=0;
+    u64 t=1000000000ull; tick(0,.016f); clock_ns+=16000000ull;
+    latest_seed(&t,(float)(90/RAD2DEG),0);
+    CHECK(latest ? Acc[0].rate_ns!=0 : Acc[0].yaw!=0,"no motion seeded for mode %d",latest);
+    orbitals_gyro_pad(0,100,0x054c,0x0df2,0,0,NULL,0,1,0);
+    CHECK(!Acc[0].rate_ns && Acc[0].yaw==0 && Acc[0].pitch==0,"focus loss kept pending motion, mode %d",latest);
+    tick(0,.016f);
+    orbitals_gyro_pad(0,100,0x054c,0x0df2,0,0,NULL,0,1,1);
+    clock_ns+=16000000ull; tick(0,.016f);
+    CHECK(cam_yaw(0)==0 && add_calls==0,"focus resume moved camera, mode %d",latest);
+  }
+}
+
 int main(void){
+  /* Check static defaults before any fixture reset changes them. */
+  CHECK(G.mode==0 && !G.latest && !G.test && !G.log && !G.calibrate,"motion enabled by default");
+  CHECK(G.sens_x==1.5f && G.sens_y==1.5f && G.tightening==3.0f,"default response changed");
+  CHECK(G.button==20 && !G.button_toggle && !G.invert,"default button convention changed");
   g_mem = calloc(1, MEM);
   static GuestFn disp[64]; g_disp = disp;
   g_add_yaw = g_code_lo; g_add_pitch = g_code_lo + 4;
@@ -778,6 +797,7 @@ int main(void){
   test_settle_after_clock_snapshot();
   test_latest_delivery();
   test_latest_boundaries();
+  test_focus_loss_clears_pending();
   test_delay_parsing();
   test_delay_holds_start_until_delay();
   test_delay_keeps_gate_and_ends();

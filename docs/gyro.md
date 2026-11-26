@@ -51,11 +51,12 @@ integrals, even with `latest` configured.
 ## Validation and human trial
 
 The source implementation was tried with DualSense Edge and regular DualSense
-Bluetooth. The owner accepted Edge motion with `latest`, sensitivity 1.0 on both
+Bluetooth. The tester accepted Edge motion with `latest`, sensitivity 1.0 on both
 axes and touchpad toggle; subsequently accepted a regular DualSense trial with
 configured tightening 1.5. That last trial's session INI was not inspected after
 restart. These are optional subjective tuning reports, not defaults, latency
-measurements, or live validation of this extracted upstream tree. Bridge software
+measurements, or live validation of this extracted upstream tree. The accepted installation did not include the separate 2 ms frontend polling
+experiment from the development branch. Bridge software
 compatibility, other game builds and broader gameplay remain unverified.
 
 Asset-free checks:
@@ -69,9 +70,10 @@ python3 switchrecomp.py --build-runtime --target win64 --backend win32 --cc x86_
 
 The real-C harness covers per-player routing, allowed/refused gameplay and
 malformed types, shared pause, no resume jump, delivery boundaries, synthetic
-success/failure/inconclusive results and mutations of key rules. Storage tests
-cover standalone and linked saves, profile/model isolation, save replacement,
-failed writes and clock discontinuities. They simulate engine state and do not
+success/failure/inconclusive results and mutations of key rules. Storage tests on POSIX
+cover standalone and symlinked saves, profile/model isolation, save replacement,
+failed writes and clock discontinuities. Windows directory-junction resolution and
+atomic replacement remain unexecuted here; POSIX links do not validate them. They simulate engine state and do not
 prove physical sensor acquisition or in-game feel.
 
 Extraction-host verification: 63 Python tests completed with two upstream skips
