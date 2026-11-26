@@ -74,6 +74,24 @@ class WindowlessTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("Set it up again", lines[-1])
 
+    def test_play_uses_the_session_settings_without_keeping_them(self):
+        build_fixture(self.games / "Orbitals")
+        seen = {}
+
+        def launch(game, profiles):
+            seen.update(profiles.settings)
+            run = profiles.directory / "runs" / "session"
+            run.mkdir(parents=True)
+            (run / "Orbitals.log").write_text("log", encoding="utf-8")
+            return type("Process", (), {"wait": lambda self: 0})(), run
+
+        with patch.object(recomplauncher, "launch", side_effect=launch):
+            code, _ = self.run_main("--play", "--data", str(self.data), "--set=fps=60 (experimental)", "--set=vsync=false")
+        self.assertEqual(code, 0)
+        self.assertEqual((seen["fps"], seen["vsync"], seen["display"]), ("60 (experimental)", False, "Windowed"))
+        self.assertEqual(core.Profiles(self.data / "launcher").settings["fps"], "30 (reference)")
+        self.assertTrue((self.data / "launcher" / "logs" / "Orbitals.log").is_file())
+
     def test_session_settings(self):
         self.assertEqual(recomplauncher.setting("fps=60 (experimental)"), ("fps", "60 (experimental)"))
         self.assertEqual(recomplauncher.setting("vsync=false"), ("vsync", False))
