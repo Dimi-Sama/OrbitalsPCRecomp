@@ -1,5 +1,7 @@
 # Liftoff — Orbitals PC Recomp
 
+<a href="https://recomplauncher.com"><picture><source media="(prefers-color-scheme: dark)" srcset="https://recomplauncher.com/assets/press/launcher/badge-light.svg"><img alt="Get it on RecompLauncher" src="https://recomplauncher.com/assets/press/launcher/badge-dark.svg" height="48"></picture></a>
+
 **Liftoff is a native PC port of *Orbitals* for Windows and Linux / Steam Deck, made by static recompilation.**
 Co-op space adventure, split screen, controllers, the game's own rendering — running natively on Vulkan, built on your PC from your own copy.
 
