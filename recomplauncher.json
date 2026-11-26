@@ -18,12 +18,11 @@
   "prepare": {
     "program": ["OrbitalsPCRecomp-x86_64.AppImage", "Orbitals-Launcher.sh", "Orbitals-Launcher.bat"],
     "args": ["--prepare", "--game={input:game}", "--data", "{data}"],
-    "label": "Recompiling your copy of the game: 20 to 60 minutes, once. The build tools are downloaded on Windows.",
+    "label": "Recompiling your copy of the game: 20 to 60 minutes, again with each new release. The build tools are downloaded on Windows.",
     "done": [
       "{data}/games/build.json",
       "{data}/games/Orbitals/Orbitals_data/romfs/Orbitals/Content/Paks/Orbitals-Switch2.utoc"
     ],
-    "keeps_copy": true,
     "options": [
       {
         "id": "shaders",
