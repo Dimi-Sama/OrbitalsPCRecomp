@@ -1,5 +1,7 @@
 # SwitchRecomp - Copyright 2026 MZ Labs
 
+from .core import BUTTON_LAYOUTS, GYRO_MODES, GYRO_BUTTONS, GYRO_BUTTON_MODES, GYRO_SENSITIVITIES
+
 import os
 import queue
 import re
@@ -318,8 +320,21 @@ class Launcher:
             title, tab = self.SUBSCREENS.get(name, (name.upper(), None))
             tabs = [("Graphics", "GRAPHICS"), ("Controls", "CONTROLS"), ("Settings", "LAUNCHER")] if tab else []
             header_strip(self.stage, title, tabs, name, on_tab=self.show, on_back=lambda: self.show("Home")).pack(fill="x")
-            self.page = tk.Frame(self.stage, bg=BG)
-            self.page.pack(fill="both", expand=True, padx=34, pady=(14, 0))
+            if name in ("Controls", "Graphics"):
+                body = tk.Frame(self.stage, bg=BG)
+                body.pack(fill="both", expand=True)
+                canvas = tk.Canvas(body, bg=BG, highlightthickness=0)
+                scrollbar = ttk.Scrollbar(body, orient="vertical", command=canvas.yview)
+                scrollbar.pack(side="right", fill="y")
+                canvas.pack(side="left", fill="both", expand=True)
+                canvas.configure(yscrollcommand=scrollbar.set)
+                self.page = tk.Frame(canvas, bg=BG)
+                item = canvas.create_window(34, 14, window=self.page, anchor="nw")
+                canvas.bind("<Configure>", lambda e: canvas.itemconfigure(item, width=max(1, e.width - 68)))
+                self.page.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+            else:
+                self.page = tk.Frame(self.stage, bg=BG)
+                self.page.pack(fill="both", expand=True, padx=34, pady=(14, 0))
         else:
             self.page = tk.Frame(self.stage, bg=BG)
             self.page.pack(fill="both", expand=True)
@@ -331,6 +346,14 @@ class Launcher:
             return
         getattr(self, {"Home": "home", "Profiles": "profile_page", "Graphics": "graphics_page", "Controls": "controls_page", "Settings": "settings_page",
                        "Support": "support_page", "Netplay": "netplay_page"}[name])()
+        if name in ("Controls", "Graphics", "Settings") and (self.process or self.job):
+            def lock(parent):
+                for child in parent.winfo_children():
+                    if isinstance(child, (ttk.Button, ttk.Combobox, ttk.Spinbox, ttk.Checkbutton, ttk.Entry)):
+                        child.state(["disabled"])
+                    lock(child)
+            lock(self.page)
+
 
     def refresh(self):
         self.show(self.active_page)
@@ -754,6 +777,31 @@ class Launcher:
             ttk.Checkbutton(panel, text="Controller vibration", variable=vibration).grid(
                 row=5, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
+        card = surface(self.page)
+        card.pack(fill="x", pady=(0, 12))
+        panel = tk.Frame(card, bg=PANEL)
+        panel.pack(fill="x", padx=13, pady=11)
+        panel.columnconfigure((0, 1, 2), weight=1, uniform="controller")
+        label(panel, "Controller layout and motion", bg=PANEL, color=CYAN, bold=True).grid(
+            row=0, column=0, columnspan=3, sticky="w")
+        choices = (("button_layout", "Button layout", BUTTON_LAYOUTS), ("gyro", "Gyro", GYRO_MODES),
+                   ("gyro_button", "Gyro button", GYRO_BUTTONS),
+                   ("gyro_sensitivity_x", "Horizontal sensitivity", GYRO_SENSITIVITIES),
+                   ("gyro_sensitivity_y", "Vertical sensitivity", GYRO_SENSITIVITIES),
+                   ("gyro_button_mode", "Button behavior", GYRO_BUTTON_MODES))
+        motion = {key: tk.StringVar(value=settings[key]) for key, _, _ in choices}
+        for n, (key, caption, values) in enumerate(choices):
+            col, row = n % 3, (n // 3) * 2 + 1
+            label(panel, caption, bg=PANEL, color=MUTED, size=9).grid(row=row, column=col, sticky="w", pady=(7, 2))
+            ttk.Combobox(panel, values=tuple(values), textvariable=motion[key], state="readonly", width=24).grid(
+                row=row + 1, column=col, sticky="ew", padx=(0, 9))
+        calibrate = tk.BooleanVar(value=settings["gyro_calibrate"])
+        ttk.Checkbutton(panel, text="Calibrate on next gyro launch (keep controller still)", variable=calibrate).grid(
+            row=5, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        label(panel, "Requires the companion button-layout / gyro runtime. Xbox and PlayStation use bottom-button accept.\n"
+                     "Gyro needs a motion-capable controller and SDL; these options do not update the runtime.",
+              bg=PANEL, color=MUTED, size=9, wraplength=760).grid(row=6, column=0, columnspan=3, sticky="w", pady=(7, 0))
+
         def save():
             self.guard()
             try:
@@ -762,6 +810,9 @@ class Launcher:
                 raise LauncherError("Enter a mouse speed from 10 to 500, or leave it blank.") from err
             values = {"keyboard": players[player.get()], "mouse_camera": cameras[camera.get()],
                       "mouse_sensitivity": sensitivity, "vibration": vibration.get()}
+            values |= {key: float(var.get()) if key.startswith("gyro_sensitivity_") else var.get()
+                       for key, var in motion.items()}
+            values["gyro_calibrate"] = calibrate.get()
             validate_settings(self.profiles.settings | values)
             self.profiles.update_active(settings=self.profiles.profile["settings"] | values)
             self.page_state.set("Controls saved for the next launch.")
