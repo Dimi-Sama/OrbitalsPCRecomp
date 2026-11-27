@@ -130,6 +130,28 @@ class ResolutionRowsTest(LauncherWindowTest):
             self.tk.update()
             self.assertEqual(canvas.yview()[0], before, page)
 
+    def test_low_preset_explains_inactive_tv_output(self):
+        from tkinter import ttk
+        ui = Launcher(self.tk, self.root / 'low-tv', None)
+        ui.show('Graphics')
+        def widgets(parent):
+            for child in parent.winfo_children():
+                yield child
+                yield from widgets(child)
+        all_widgets = list(widgets(ui.page))
+        combos = [w for w in all_widgets if isinstance(w, ttk.Combobox)]
+        preset = next(w for w in combos if 'Low' in w.cget('values'))
+        tv = next(w for w in combos if '1440p' in w.cget('values'))
+        def warning():
+            return '\n'.join(str(w.cget('text')) for w in all_widgets if isinstance(w, (tk.Label, ttk.Label)))
+        preset.set('Low')
+        tv.set('1440p')
+        self.tk.update_idletasks()
+        self.assertIn('TV output resolution has no effect', warning())
+        preset.set('High')
+        self.tk.update_idletasks()
+        self.assertNotIn('TV output resolution has no effect', warning())
+
     def test_tv_selector_save_and_reset(self):
         from tkinter import ttk
         ui = Launcher(self.tk, self.root / 'resolution', None)

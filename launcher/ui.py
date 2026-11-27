@@ -918,10 +918,12 @@ class Launcher:
             messages = [(graphics.TV_NOTE + " Rebuild the runtime and game module; TV mode only. Restart required.")
                         if graphics.TV_RESOLUTIONS[tv_resolution.get()] else "",
                         graphics.FPS_WARNINGS.get(fps.get(), ""), graphics.MODE_NOTES.get(mode.get(), "")]
+            if graphics.TV_RESOLUTIONS[tv_resolution.get()] and graphics.effective_mode(preset.get(), mode.get()) == "Portable":
+                messages.append("TV output resolution has no effect: the current preset/mode uses Portable output.")
             if desktop:
                 messages.append("Borderless uses the monitor's desktop resolution.")
             warning.set("\n".join(filter(None, messages)))
-        for value in (fps, mode, display, tv_resolution):
+        for value in (fps, mode, display, tv_resolution, preset):
             value.trace_add("write", display_status)
         display_status()
         label(panel2, textvariable=warning, bg=PANEL, size=9, color=PEACH, wraplength=760).grid(

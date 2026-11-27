@@ -27,11 +27,13 @@ The second commit adapts `launcher-tvres` (`b5b1a75`) choices: console/0, 1440,
 (`32348e0`): INI parsing, AM/VI display size and the Orbitals FParse resolution
 hook. No environment-variable forwarding or Vulkan changes are included.
 This is the game's TV output/HUD resolution, separate from internal 3D resolution
-and window size. Portable mode ignores it; select a TV rendering mode to use it.
+and window size. Portable mode ignores it. Low forces Portable regardless of the
+previous mode selection, so its TV output setting has no effect. Use a preset
+whose effective mode is TV, or Custom with a TV rendering mode.
 
 **Rebuild both runtime and game module.** The source hook changed `g_disp` only,
 but `codegen.emit_function` emits direct C calls for known BL targets. The shared build-ID keyed
-`DYNAMIC_CALLS` table routes only the validated main build's `0x35d1740` entry through
+`DYNAMIC_CALLS` table routes the validated main build's `0x35d1740` and button prompt targets through
 `CALLDYN`, for BL and external tail calls. Other builds retain direct calls.
 The loader strips trailing zero bytes from NSO build IDs; dispatch matching uses
 the first 16 bytes, tested through the real loader with a synthetic NSO.
