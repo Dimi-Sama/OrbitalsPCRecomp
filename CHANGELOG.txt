@@ -1,3 +1,5 @@
+Vulkan: prepare writeback resources before dispatch, order snapshot reads, protect ring lifetime, and add optional device-local comparison snapshots (off by default).
+
 Switch2Recomp 0.4.1 - MZ Labs
 
 - Install.bat and Install.sh work again: the release builds were missing the tool folder (get_deps.py).

@@ -1,3 +1,4 @@
+/* Orbitals PC Recomp, based on SwitchRecomp by MZ Labs. AGPL-3.0, see LICENSE.txt and NOTICE.txt. */
 // Write-back bookkeeping with no Vulkan in it (vk_mem.c, vk_submit.c; tests/test_wb_core.c runs it on the host):
 // the ring a dispatch's write-backs live in, the plan a dispatch range gets before its shader, and the room for completion effects.
 #pragma once
