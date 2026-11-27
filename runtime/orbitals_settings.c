@@ -47,6 +47,34 @@ static void orbitals_widget_install(const SwrModInfo* mod){
 }
 #endif
 
+/* display_resolution (TV mode): the Switch 2 platform code sets r.SetRes to 1920x1080 when docked, by code, which outranks
+   every ini. Its sink parses the string with this function (FParse resolution: string, &x, &y, &window mode) before storing
+   GSystemResolution and resizing the viewport; a 1920x1080 result becomes the TV size display_resolution asks for */
+enum { PARSE_RES=0x35d1740 };
+static GuestFn parse_res_orig;
+static void orbitals_parse_res(CPU* c,u64 pc){
+  u64 px=c->x[1], py=c->x[2], resume=c->x[30];
+  parse_res_orig(c,pc);
+  if(c->pc!=resume || !(c->x[0]&1) || !guest_span_writable(px,4,4) || !guest_span_writable(py,4,4)) return;
+  if(gr32(px)!=1920 || gr32(py)!=1080) return;
+  u32 h=(u32)g_display_h, w=h*16/9;
+  memcpy(GP(px),&w,4); memcpy(GP(py),&h,4);
+  static int said; if(said<4){ said++; LOG("Orbitals: system resolution 1920x1080 -> %ux%u (display_resolution)\n",w,h); }
+}
+static void orbitals_parse_res_install(const SwrModInfo* mod){
+  if(!g_opt_display_h || !g_opt_docked) return;
+  u64 pc=mod->base+PARSE_RES;
+  if(PARSE_RES+8>mod->text_off+mod->text_size || pc<g_code_lo || pc+8>g_code_hi ||
+     !guest_span_readable(pc,8,4) || gr32(pc)!=0xd503237fu || gr32(pc+4)!=0xd10243ffu) return;   /* pacibsp; sub sp, sp, #0x90 */
+  if(!code_dynamic_call(pc)){
+    LOG("Orbitals: TV resolution not applied (regenerate the game code module)\n");
+    return;
+  }
+  GuestFn* entry=&g_disp[(pc-g_code_lo)/4];
+  if(!*entry || *entry==orbitals_parse_res) return;
+  parse_res_orig=*entry; *entry=orbitals_parse_res; g_display_h=g_opt_display_h;
+  LOG("Orbitals: TV resolution %dp bound to r.SetRes\n",g_opt_display_h);
+}
 void orbitals_scene_init(void){
   for(u32 i=0;i<g_mod->nmods;i++){
     const SwrModInfo* mod=&g_mod->mods[i];
@@ -55,6 +83,7 @@ void orbitals_scene_init(void){
     orbitals_widget_install(mod);
 #endif
     orbitals_buttons_install(mod);
+    orbitals_parse_res_install(mod);
     if(mod->size<0x9c48a38 || mod->text_size<0x2ddc5c8) return;
     u64 load=mod->base+0x2ddc5bc;
     if(gr32(load)!=0x90037368 || gr32(load+4)!=0xf9451908 || gr32(load+8)!=0xbd400100) return;

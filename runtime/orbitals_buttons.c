@@ -4,7 +4,6 @@
 #include "orbitals_buttons.h"
 
 
-int code_dynamic_call(u64 pc);                /* main.c: the code module calls pc through g_disp */
 
 /* ===================================================================== button layout
    Measured on the PC (2026-11-26, docs/BUTTON_LAYOUT.md):

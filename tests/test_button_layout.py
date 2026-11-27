@@ -70,7 +70,7 @@ def prompt_fixture_program(dynamic):
 
 class CodegenDynamicCallTests(unittest.TestCase):
     def test_orbitals_icon_lookup_is_listed_for_the_runtimes_build(self):
-        self.assertEqual(codegen.DYNAMIC_CALLS[ORBITALS_MAIN], (0x40c5020, 0x40c5ce0))
+        self.assertEqual(codegen.DYNAMIC_CALLS[ORBITALS_MAIN], (0x35d1740, 0x40c5020, 0x40c5ce0))
         with open(os.path.join(ROOT, 'runtime', 'orbitals_buttons.c')) as f: src = f.read()
         build = re.search(r'orbitals_build\[16\] = \{([^}]*)\}', src).group(1)
         self.assertEqual(bytes(int(x, 16) for x in build.split(',')).hex(), ORBITALS_MAIN)

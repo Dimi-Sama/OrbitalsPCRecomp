@@ -80,3 +80,68 @@ class DemoScreenTest(unittest.TestCase):
                     demo._frame_common()
                     demo.t += 1
                 demo.destroy()
+
+class ControlsRowsTest(LauncherWindowTest):
+    def test_controls_defaults_save_and_session_lock(self):
+        from tkinter import ttk
+        ui = Launcher(self.tk, self.root / 'controls', None)
+        ui.job = True
+        ui.show('Controls')
+        def widgets(parent):
+            for child in parent.winfo_children():
+                yield child
+                yield from widgets(child)
+        combos = [w for w in widgets(ui.page) if isinstance(w, ttk.Combobox)]
+        self.assertTrue(all(w.instate(['disabled']) for w in combos))
+        self.assertIn('Nintendo', [w.get() for w in combos])
+        self.assertIn('Off', [w.get() for w in combos])
+        ui.job = None
+        with patch.object(ui, 'background'):
+            ui.show('Controls')
+        combos = [w for w in widgets(ui.page) if isinstance(w, ttk.Combobox)]
+        layout = next(w for w in combos if 'Nintendo' in w.cget('values'))
+        layout.set('Xbox')
+        next(w for w in widgets(ui.page) if isinstance(w, ttk.Button) and w.cget('text') == 'Save').invoke()
+        self.assertEqual(ui.profiles.settings['button_layout'], 'Xbox')
+        first = ui.profiles.active
+        ui.profiles.create('Other player')
+        self.assertEqual(ui.profiles.settings['button_layout'], 'Nintendo')
+        ui.profiles.select(first)
+        self.assertEqual(ui.profiles.settings['button_layout'], 'Xbox')
+
+class ResolutionRowsTest(LauncherWindowTest):
+    def test_mouse_wheel_scrolls_both_settings_pages(self):
+        self.tk.deiconify()
+        self.tk.geometry("880x650")
+        ui = Launcher(self.tk, self.root / 'wheel', None)
+        for page in ('Controls', 'Graphics'):
+            ui.show(page)
+            self.tk.update()
+            canvas = ui.page.master
+            canvas.yview_moveto(0)
+            before = canvas.yview()[0]
+            ui.page.event_generate('<Button-5>')
+            self.tk.update()
+            if canvas.winfo_height() < ui.page.winfo_reqheight() + 28:
+                self.assertGreater(canvas.yview()[0], before, page)
+            else:
+                self.assertEqual(canvas.yview()[0], before, page)
+            ui.page.event_generate('<MouseWheel>', delta=120)
+            self.tk.update()
+            self.assertEqual(canvas.yview()[0], before, page)
+
+    def test_tv_selector_save_and_reset(self):
+        from tkinter import ttk
+        ui = Launcher(self.tk, self.root / 'resolution', None)
+        ui.show('Graphics')
+        def widgets(parent):
+            for child in parent.winfo_children():
+                yield child
+                yield from widgets(child)
+        combo = next(w for w in widgets(ui.page) if isinstance(w, ttk.Combobox) and '2160p (4K)' in w.cget('values'))
+        self.assertEqual(combo.get(), '1080p (console)')
+        combo.set('2160p (4K)')
+        next(w for w in widgets(ui.page) if isinstance(w, ttk.Button) and w.cget('text') == 'Save').invoke()
+        self.assertEqual(ui.profiles.settings['tv_resolution'], '2160p (4K)')
+        next(w for w in widgets(ui.page) if isinstance(w, ttk.Button) and w.cget('text') == 'Reset').invoke()
+        self.assertEqual(ui.profiles.settings['tv_resolution'], '1080p (console)')

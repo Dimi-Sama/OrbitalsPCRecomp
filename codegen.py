@@ -19,7 +19,7 @@ UNCOND = ('b', 'br', 'ret', 'brk')
 # runtime can tell. Module build id (first 16 bytes, hex) -> offsets in that module.
 DYNAMIC_CALLS = {
     # Orbitals main (runtime/orbitals_buttons.h): the action prompt (icon_prompt) and the button icon lookup (icon_lookup)
-    '0f8ef52cf4eee37628f366a539d5d6ad': (0x40c5020, 0x40c5ce0),
+    '0f8ef52cf4eee37628f366a539d5d6ad': (0x35d1740, 0x40c5020, 0x40c5ce0),
 }
 
 

@@ -13,7 +13,7 @@ from tkinter import filedialog, font, messagebox, simpledialog, ttk
 from . import VERSION, graphics
 from .demo import DemoScreen
 from .neo import TitleScreen, header_strip
-from .core import (install_fraction, REPO, carry_saves, download_update, game_source, launch_kit, outdated_release, LOG, RELEASES_URL, WINDOWS, LauncherError, Profiles, check_update, detect_installation, finish_session,
+from .core import (BUTTON_LAYOUTS, GYRO_MODES, GYRO_BUTTONS, GYRO_BUTTON_MODES, GYRO_SENSITIVITIES, install_fraction, REPO, carry_saves, download_update, game_source, launch_kit, outdated_release, LOG, RELEASES_URL, WINDOWS, LauncherError, Profiles, check_update, detect_installation, finish_session,
                    gamepad_inventory, graphics_settings, install_from_files, installation, json_bytes, latest_run,
                    launch, prepare, prepare_shaders, runtime_info, shader_preparation, validate_settings)
 from .reports import ISSUE_TYPES, create_report, gpu_info, report_saves, system_info
@@ -318,8 +318,22 @@ class Launcher:
             title, tab = self.SUBSCREENS.get(name, (name.upper(), None))
             tabs = [("Graphics", "GRAPHICS"), ("Controls", "CONTROLS"), ("Settings", "LAUNCHER")] if tab else []
             header_strip(self.stage, title, tabs, name, on_tab=self.show, on_back=lambda: self.show("Home")).pack(fill="x")
-            self.page = tk.Frame(self.stage, bg=BG)
-            self.page.pack(fill="both", expand=True, padx=34, pady=(14, 0))
+            if name in ("Controls", "Graphics"):
+                body = tk.Frame(self.stage, bg=BG)
+                body.pack(fill="both", expand=True)
+                canvas = tk.Canvas(body, bg=BG, highlightthickness=0)
+                scrollbar = ttk.Scrollbar(body, orient="vertical", command=canvas.yview)
+                scrollbar.pack(side="right", fill="y")
+                canvas.pack(side="left", fill="both", expand=True)
+                canvas.configure(yscrollcommand=scrollbar.set)
+                self.page = tk.Frame(canvas, bg=BG)
+                item = canvas.create_window(34, 14, window=self.page, anchor="nw")
+                canvas.bind("<Configure>", lambda e: canvas.itemconfigure(item, width=max(1, e.width - 68)))
+                self.page.bind("<Configure>", lambda e: canvas.configure(
+                    scrollregion=(0, 0, canvas.winfo_width(), self.page.winfo_reqheight() + 28)))
+            else:
+                self.page = tk.Frame(self.stage, bg=BG)
+                self.page.pack(fill="both", expand=True, padx=34, pady=(14, 0))
         else:
             self.page = tk.Frame(self.stage, bg=BG)
             self.page.pack(fill="both", expand=True)
@@ -331,6 +345,38 @@ class Launcher:
             return
         getattr(self, {"Home": "home", "Profiles": "profile_page", "Graphics": "graphics_page", "Controls": "controls_page", "Settings": "settings_page",
                        "Support": "support_page", "Netplay": "netplay_page"}[name])()
+        if name in ("Controls", "Graphics"):
+            canvas = self.page.master
+            def reveal(event):
+                canvas.update_idletasks()
+                top = canvas.canvasy(0)
+                y = event.widget.winfo_rooty() - self.page.winfo_rooty() + 14
+                if y < top or y + event.widget.winfo_height() > top + canvas.winfo_height():
+                    canvas.yview_moveto(max(0, y - canvas.winfo_height() / 2) / (self.page.winfo_reqheight() + 28))
+            def wheel(event):
+                if canvas.winfo_height() >= self.page.winfo_reqheight() + 28:
+                    return "break"
+                delta = -1 if getattr(event, "num", 0) == 4 else 1 if getattr(event, "num", 0) == 5 else (-1 if event.delta > 0 else 1)
+                canvas.yview_scroll(delta * 3, "units")
+                return "break"
+            for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                canvas.bind(sequence, wheel)
+                self.page.bind(sequence, wheel)
+            def focus_scroll(parent):
+                for child in parent.winfo_children():
+                    child.bind("<FocusIn>", reveal, add="+")
+                    for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                        child.bind(sequence, wheel)
+                    focus_scroll(child)
+            focus_scroll(self.page)
+        if name in ("Controls", "Graphics", "Settings") and (self.process or self.job):
+            def lock(parent):
+                for child in parent.winfo_children():
+                    if isinstance(child, (ttk.Button, ttk.Combobox, ttk.Spinbox, ttk.Checkbutton, ttk.Entry)):
+                        child.state(["disabled"])
+                    lock(child)
+            lock(self.page)
+
 
     def refresh(self):
         self.show(self.active_page)
@@ -754,6 +800,31 @@ class Launcher:
             ttk.Checkbutton(panel, text="Controller vibration", variable=vibration).grid(
                 row=5, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
+        card = surface(self.page)
+        card.pack(fill="x", pady=(0, 12))
+        panel = tk.Frame(card, bg=PANEL)
+        panel.pack(fill="x", padx=13, pady=11)
+        panel.columnconfigure((0, 1, 2), weight=1, uniform="controller")
+        label(panel, "Controller layout and motion", bg=PANEL, color=CYAN, bold=True).grid(
+            row=0, column=0, columnspan=3, sticky="w")
+        choices = (("button_layout", "Button layout", BUTTON_LAYOUTS), ("gyro", "Gyro", GYRO_MODES),
+                   ("gyro_button", "Gyro button", GYRO_BUTTONS),
+                   ("gyro_sensitivity_x", "Horizontal sensitivity", GYRO_SENSITIVITIES),
+                   ("gyro_sensitivity_y", "Vertical sensitivity", GYRO_SENSITIVITIES),
+                   ("gyro_button_mode", "Button behavior", GYRO_BUTTON_MODES))
+        motion = {key: tk.StringVar(value=settings[key]) for key, _, _ in choices}
+        for n, (key, caption, values) in enumerate(choices):
+            col, row = n % 3, (n // 3) * 2 + 1
+            label(panel, caption, bg=PANEL, color=MUTED, size=9).grid(row=row, column=col, sticky="w", pady=(7, 2))
+            ttk.Combobox(panel, values=tuple(values), textvariable=motion[key], state="readonly", width=24).grid(
+                row=row + 1, column=col, sticky="ew", padx=(0, 9))
+        calibrate = tk.BooleanVar(value=settings["gyro_calibrate"])
+        ttk.Checkbutton(panel, text="Calibrate on next gyro launch (keep controller still)", variable=calibrate).grid(
+            row=5, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        label(panel, "Requires the companion button-layout / gyro runtime. Xbox and PlayStation use bottom-button accept.\n"
+                     "Gyro needs a motion-capable controller and SDL; these options do not update the runtime.",
+              bg=PANEL, color=MUTED, size=9, wraplength=760).grid(row=6, column=0, columnspan=3, sticky="w", pady=(7, 0))
+
         def save():
             self.guard()
             try:
@@ -762,6 +833,9 @@ class Launcher:
                 raise LauncherError("Enter a mouse speed from 10 to 500, or leave it blank.") from err
             values = {"keyboard": players[player.get()], "mouse_camera": cameras[camera.get()],
                       "mouse_sensitivity": sensitivity, "vibration": vibration.get()}
+            values |= {key: float(var.get()) if key.startswith("gyro_sensitivity_") else var.get()
+                       for key, var in motion.items()}
+            values["gyro_calibrate"] = calibrate.get()
             validate_settings(self.profiles.settings | values)
             self.profiles.update_active(settings=self.profiles.profile["settings"] | values)
             self.page_state.set("Controls saved for the next launch.")
@@ -775,6 +849,7 @@ class Launcher:
         gfx = graphics_settings(settings)
         preset = tk.StringVar(value=gfx["preset"])
         option_vars = {name: tk.StringVar(value=gfx.get(name, graphics.ORIGINAL)) for name in graphics.OPTIONS}
+        tv_resolution = tk.StringVar(value=settings["tv_resolution"])
         fps = tk.StringVar(value=settings["fps"])
         mode = tk.StringVar(value=settings["mode"])
         display = tk.StringVar(value=settings["display"])
@@ -827,7 +902,8 @@ class Launcher:
                 ("Display", ttk.Combobox(panel2, textvariable=display, values=("Windowed", "Borderless"), state="readonly", width=14)),
                 ("Window output size", size_control),
                 ("Upscaling filter", ttk.Combobox(panel2, textvariable=upscale, values=("Standard", "Sharp", "FSR1"), state="readonly", width=14)),
-                ("VSync", ttk.Checkbutton(panel2, variable=vsync, text="On")))
+                ("VSync", ttk.Checkbutton(panel2, variable=vsync, text="On")),
+                ("TV output resolution", ttk.Combobox(panel2, textvariable=tv_resolution, values=graphics.TV_CHOICES, state="readonly", width=24)))
         for n, (caption, control) in enumerate(rows):
             col, row = n % 3, (n // 3) * 2 + 1
             label(panel2, caption, bg=PANEL, size=9, color=MUTED).grid(row=row, column=col, sticky="w", pady=(7, 1))
@@ -839,11 +915,13 @@ class Launcher:
         def display_status(*_):
             desktop = display.get() == "Borderless"
             size_control.configure(state="disabled" if desktop else "normal")
-            messages = [graphics.FPS_WARNINGS.get(fps.get(), ""), graphics.MODE_NOTES.get(mode.get(), "")]
+            messages = [(graphics.TV_NOTE + " Rebuild the runtime and game module; TV mode only. Restart required.")
+                        if graphics.TV_RESOLUTIONS[tv_resolution.get()] else "",
+                        graphics.FPS_WARNINGS.get(fps.get(), ""), graphics.MODE_NOTES.get(mode.get(), "")]
             if desktop:
                 messages.append("Borderless uses the monitor's desktop resolution.")
             warning.set("\n".join(filter(None, messages)))
-        for value in (fps, mode, display):
+        for value in (fps, mode, display, tv_resolution):
             value.trace_add("write", display_status)
         display_status()
         label(panel2, textvariable=warning, bg=PANEL, size=9, color=PEACH, wraplength=760).grid(
@@ -851,7 +929,7 @@ class Launcher:
 
         def save():
             self.guard()
-            values = {"gfx_preset": preset.get(), "fps": fps.get(), "mode": mode.get(), "display": display.get(),
+            values = {"tv_resolution": tv_resolution.get(), "gfx_preset": preset.get(), "fps": fps.get(), "mode": mode.get(), "display": display.get(),
                       "size": size.get().strip(), "upscale": upscale.get(), "vsync": bool(vsync.get())}
             if preset.get() == "Custom":
                 values |= {f"gfx_{k}": v.get() for k, v in option_vars.items()}
@@ -867,7 +945,7 @@ class Launcher:
         def reset():
             self.guard()
             current = dict(self.profiles.profile.get("settings", {}))
-            keep = {k: v for k, v in current.items() if not k.startswith("gfx_") and k not in ("fps", "mode", "display", "size", "upscale", "vsync")}
+            keep = {k: v for k, v in current.items() if not k.startswith("gfx_") and k not in ("tv_resolution", "fps", "mode", "display", "size", "upscale", "vsync")}
             self.profiles.update_active(settings=keep)
             self.page_state.set("Graphics reset (High, 30 FPS).")
             self.refresh()
