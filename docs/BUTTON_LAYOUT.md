@@ -38,6 +38,13 @@ with no object reads after that call. A generated Game.ini overlay supplies the 
 UI contexts only when bottom acceptance and a non-Nintendo layout are both enabled.
 Selecting Nintendo on restart stops applying that overlay.
 
+Bottom acceptance requires the directory-backed RomFS overlay path and permission
+to write the generated overlay beside the executable. With `romfs.bin`, or when
+that write fails, the EKeys/redirect hooks can still apply without the PC UI
+contexts. This partial configuration is unsupported: leave `button_accept_bottom=0`
+until the overlay is available. The runtime does not yet gate hook installation
+on successful overlay mounting.
+
 **Limitation:** the redirect wrappers cover shared UObject virtual functions, so
 unrelated objects also pay the receiver check. This is the original implementation's
 broad hook, not a verified narrow Enhanced Input consumer hook. The observed paths
@@ -64,3 +71,8 @@ Run `python3 -m unittest discover -s tests -p test_button_layout.py -v`.
 Set `ORBITALS_MAIN_BIN` to your own main.bin to additionally verify instruction
 signatures against the game image; otherwise that test reports a skip. No game
 assets are included. `SWR_ICON_TRACE=1` enables bounded prompt diagnostics.
+
+Review confirmed the default/build-ID guards, capability refusal and destructor
+exclusion by inspection (and destructor addresses against the binary). The current
+tests do not independently catch removal of each of those installation guards or
+the NULL Switch-texture skip; these remain coverage gaps, not live-game validation.
