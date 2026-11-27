@@ -1,3 +1,7 @@
+Vulkan: prepare writeback resources before dispatch, order snapshot reads, protect ring lifetime, and add optional device-local comparison snapshots (off by default).
+Experimental TV output resolution and per-profile launcher controls. TV output applies in TV mode only; rebuild both the runtime and game code module.
+Optional Xbox/PlayStation prompts and bottom accept/right back (regenerate game code; Nintendo defaults unchanged).
+
 Switch2Recomp 0.4.1 - MZ Labs
 
 - Install.bat and Install.sh work again: the release builds were missing the tool folder (get_deps.py).

@@ -213,11 +213,20 @@ on the Deck it held duplicated and out-of-range indices and the sort's own `0x0b
 hands values between the lanes of one warp through shared memory without a barrier. SPIR-V does not promise that order; RADV's ACO
 keeps or reorders those shared accesses, and the sort breaks.
 
-**Fix:** `vkspv_volatile_shared` (vk_shader.c) gives every load and store through a Workgroup pointer the Volatile memory access. On by
+**Fix in v0.1.5:** `vkspv_volatile_shared` (vk_shader.c) gives every load and store through a Workgroup pointer the Volatile memory access. On by
 default on every driver except NVIDIA's own (the reference, which draws it right as compiled); `NXRT_VK_SHARED_VOLATILE=0/1` forces
 it. **Verified** on the Deck, space route, same build: 0 padding entries and a clean permutation; worst saturated blue 0.55 % of a
 capture against 13 %, green 0 against 13.5 %. Co-op corridor 21.67 against 21.72 FPS (the space scene is not comparable: the build
 without the fix draws the broken sprites). NVIDIA (RTX 5070 Laptop): unchanged, 53.5 / 50.5 FPS.
+
+For a comparison on another GPU, start two fresh processes at the same checkpoint and camera with `NXRT_VK_SHARED_VOLATILE=0`
+and `NXRT_VK_SHARED_VOLATILE=1`. Keep subgroup and other renderer settings identical. The development launcher forwards explicit
+`0` and `1` for `NXRT_VK_SHARED_VOLATILE`, `NXRT_VK_SUBGROUP32` and `NXRT_VK_SHADOW_LAZY`. On the v0.1.5 kit, set the variable
+before starting the game with the installed `Play-Orbitals.ps1` script. The Vulkan startup lines record the active driver, default
+subgroup size, requested 32-lane stages and the selected shared-memory mode. Diagnostic reports retain these lines from long logs.
+
+**Private v0.1.6 previews:** enable the Volatile rewrite by default on all drivers, including proprietary NVIDIA, for an RTX 3060 A/B test.
+Keep `NXRT_VK_SHARED_VOLATILE=0` available to reproduce the previous NVIDIA mode on the same binary.
 
 ## Switch 2 references and the space scene (v0.1.5)
 

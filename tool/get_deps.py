@@ -7,6 +7,9 @@
 #   get_deps.py           everything that's missing
 #   get_deps.py gcc|sdl   only that
 import hashlib, io, json, os, shutil, sys, tarfile, tempfile, time, urllib.request, zipfile
+import ssl
+import subprocess
+import urllib.error
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(HERE, 'tool', 'pylib'))   # zstandard for pythons older than 3.14
@@ -64,17 +67,55 @@ SDL_WHEEL = ('https://files.pythonhosted.org/packages/5d/6e/07ec92ba241b2aa941ab
 LIB = os.path.join(HERE, 'lib')
 
 
+def download_bytes(url, sha):
+    try:
+        with urllib.request.urlopen(url, timeout=120) as response:
+            return response.read()
+    except (ssl.SSLCertVerificationError, urllib.error.URLError) as exc:
+        reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+        if not (WIN and sha and url.startswith('https://') and isinstance(reason, ssl.SSLCertVerificationError)):
+            raise
+        system_root = os.environ.get('SystemRoot')
+        curl = os.path.join(system_root, 'System32', 'curl.exe') if system_root else None
+        if not curl or not os.path.isfile(curl):
+            curl = shutil.which('curl.exe')
+        if not curl:
+            raise
+        print('  Python could not verify the TLS certificate; retrying with Windows curl.exe.', flush=True)
+        result = subprocess.run(
+            [curl, '--disable', '--fail', '--location', '--silent', '--show-error',
+             '--proto', '=https', '--proto-redir', '=https', '--max-time', '120', '--', url],
+            capture_output=True, timeout=125,
+        )
+        if result.returncode:
+            detail = result.stderr.decode(errors='replace').strip()
+            raise IOError(f'curl.exe failed ({result.returncode}): {detail}') from exc
+        return result.stdout
+
+
 def fetch(url, sha, cache, tries=4):
-    if os.path.isfile(cache) and (not sha or hashlib.sha256(open(cache, 'rb').read()).hexdigest() == sha):
-        return open(cache, 'rb').read()
+    if os.path.isfile(cache):
+        with open(cache, 'rb') as file:
+            cached = file.read()
+        if not sha or hashlib.sha256(cached).hexdigest() == sha:
+            return cached
     for t in range(tries):
         try:
-            with urllib.request.urlopen(url, timeout=120) as r:
-                data = r.read()
+            data = download_bytes(url, sha)
             if sha and hashlib.sha256(data).hexdigest() != sha:
                 raise IOError('the download is damaged (checksum)')
-            os.makedirs(os.path.dirname(cache), exist_ok=True)
-            open(cache, 'wb').write(data)
+            directory = os.path.dirname(os.path.abspath(cache))
+            os.makedirs(directory, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=directory, delete=False) as file:
+                temporary = file.name
+                try:
+                    file.write(data)
+                    file.close()
+                    os.replace(temporary, cache)
+                finally:
+                    file.close()
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
             return data
         except Exception as e:
             if t == tries - 1: raise

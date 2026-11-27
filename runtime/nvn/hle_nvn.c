@@ -78,6 +78,7 @@ HLE_FORCE("nvnBootstrapLoader", "the NVN graphics API is replaced wholesale with
 #include <process.h>
 // Asynchronous submission (aq_*, defined with nvnQueueSubmitCommands below)
 static int trs_on(void); static uint64_t g_aq_tail_peek(void); static uint64_t g_aq_done_peek(void); static int aq_on(void); static void aq_drain(void); static uint64_t aq_fence_now(void); static int aq_resolve(uint64_t *fence, uint64_t timeout); static int aq_busy(void);
+static void aq_translate_sync(const sync_t *sync, uint64_t timeout);
 // DM_NVN_CAPTURE (nxnative's nvn_capture.inc) is not ported
 #define nvn_cap_submit(n, h) ((void)0)
 #define nvn_cap_present(t, crop) ((void)0)
@@ -717,11 +718,11 @@ NVN(nvnSyncFinalize, void, NVNsync *s) { ((sync_t *)s)->magic = 0; }
 NVN(nvnSyncSetDebugLabel, void, NVNsync *s, const char *l) { (void)s; (void)l; }
 // Fence = "all commands previously submitted to the queue have completed": record the fence value of the most recent submit (with asynchronous submission, possibly still
 // a queued submission's sequence number, resolved when it is waited on)
-NVN(nvnQueueFenceSync, void, NVNqueue *q, NVNsync *s, NVNsyncCondition c, int f) { (void)q; (void)c; (void)f; ((sync_t *)s)->fence = aq_fence_now(); ((sync_t *)s)->fenced = 1;
-    if (trs_on()) LOG("[sync] queue fence %p -> %llx", (void *)s, (unsigned long long)((sync_t *)s)->fence); }
+NVN(nvnQueueFenceSync, void, NVNqueue *q, NVNsync *s, NVNsyncCondition c, int f) { (void)q; (void)c; (void)f; uint64_t value = aq_fence_now(); nvn_sync_publish((sync_t *)s, 1, value);
+    if (trs_on()) LOG("[sync] queue fence %p -> %llx", (void *)s, (unsigned long long)value); }
 // A sync object that was never fenced waits until timeout, as on a real device; a fenced one is released only after the GPU has actually completed up to that fence value
 // A GPU-side wait on a sync: the host has a single Metal queue that executes submissions in order, so commands before the fence are always done first and nothing needs waiting. A sync not fenced yet (fenced later by another thread) is not waited for here; logged once
-NVN(nvnQueueWaitSync, NVNboolean, NVNqueue *q, const NVNsync *s) { (void)q; { static long n; if (!(n++ & 1023)) LOG("[nvn] QueueWaitSync call %ld", n); } static int once; if (!((const sync_t *)s)->fenced && !once++) LOG("[nvn] QueueWaitSync: the sync object has no fence yet, the host does not wait"); return 1; }
+NVN(nvnQueueWaitSync, NVNboolean, NVNqueue *q, const NVNsync *s) { (void)q; { static long n; if (!(n++ & 1023)) LOG("[nvn] QueueWaitSync call %ld", n); } static int once; if (!nvn_sync_kind((const sync_t *)s) && !once++) LOG("[nvn] QueueWaitSync: the sync object has no fence yet, the host does not wait"); return 1; }
 // ZCull data: the host does no ZCull, so there is nothing to save / restore
 NVN(nvnCommandBufferRestoreZCullData, void, NVNcommandBuffer *c, NVNbufferAddress a, size_t n) { (void)c; (void)a; (void)n; }
 NVN(nvnCommandBufferSaveZCullData, void, NVNcommandBuffer *c, NVNbufferAddress a, size_t n) { (void)c; (void)a; (void)n; }
@@ -730,26 +731,74 @@ extern volatile int g_swr_trace_on; unsigned long long swr_trace_ts(void); void 
 #define TRS0() unsigned long long trs0_ = g_swr_trace_on ? swr_trace_ts() : 0
 #define TRS1(name) do { if (trs0_) swr_trace_span(name, trs0_); } while (0)
 static _Atomic uint64_t g_sync_ns;   // time game threads spent blocked in nvnSyncWait (waiting for the GPU), in the frame statistics
-// SWR_TRACE_SYNC=N: logs the first N sync waits, fences and acquires (diagnostic of a game that stops presenting)
-static long g_trs_left = -1;
-static int trs_on(void) { if (g_trs_left < 0) { const char *e = getenv("SWR_TRACE_SYNC"); g_trs_left = e ? atol(e) : 0; } return g_trs_left > 0 && g_trs_left--; }
+// SWR_TRACE_SYNC=N[:first_present|trace]: logs up to N sync calls from a chosen present or within SWR_TRACE.
+static _Atomic long g_trs_left = -1;
+static _Atomic long g_trs_first;
+uint64_t nxrt_nvn_presents(void);
+static int trs_on(void) {
+    long remaining = atomic_load_explicit(&g_trs_left, memory_order_relaxed);
+    if (remaining < 0) {
+        const char *env = getenv("SWR_TRACE_SYNC");
+        char *end;
+        long count = env ? strtol(env, &end, 10) : 0;
+        const char *start = env && *end == ':' ? end + 1 : "";
+        long first = strtol(start, NULL, 10);
+        atomic_store_explicit(&g_trs_first, !strcmp(start, "trace") ? -1 : first > 0 ? first : 0, memory_order_relaxed);
+        atomic_compare_exchange_strong(&g_trs_left, &remaining, count > 0 ? count : 0);
+        remaining = atomic_load(&g_trs_left);
+    }
+    if (remaining <= 0) return 0;
+    long first = atomic_load_explicit(&g_trs_first, memory_order_relaxed);
+    if (first < 0 ? !g_swr_trace_on : nxrt_nvn_presents() < (uint64_t)first)
+        return 0;
+    do {
+        if (remaining <= 0) return 0;
+    } while (!atomic_compare_exchange_weak_explicit(&g_trs_left, &remaining, remaining - 1,
+                                                    memory_order_relaxed, memory_order_relaxed));
+    return 1;
+}
 static NVNsyncWaitResult sync_wait_(const NVNsync *s, uint64_t timeout);
 NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
-    const sync_t *o = (const sync_t *)s; int fd = o->fenced; uint64_t fv = o->fence;
+    int trace = trs_on();
+    const sync_t *o = (const sync_t *)s;
+    unsigned fd = nvn_sync_kind(o);
+    uint64_t fv = nvn_sync_value(o);
+    uint64_t t0 = trace ? now_ns() : 0;
     NVNsyncWaitResult r = sync_wait_(s, timeout);
-    if (trs_on()) LOG("[sync] wait %p fenced %d fence %llx timeout %lld -> %d (aq tail %llu done %llu)", (const void *)s, fd, (unsigned long long)fv, (long long)timeout, (int)r,
-                      (unsigned long long)g_aq_tail_peek(), (unsigned long long)g_aq_done_peek());
+    if (trace) {
+        uint64_t elapsed = now_ns() - t0;
+        char caller[160];
+        NxwGuestCpu *cpu = nxrt_cur_cpu();
+        nxrt_symbolize(cpu ? cpu->x[30] : 0, caller, sizeof caller);
+        LOG("[sync] wait %p fenced %u fence %llx timeout %lld -> %d (aq tail %llu done %llu) frame %llu %.3f ms caller %s",
+            (const void *)s, fd, (unsigned long long)fv, (long long)timeout, (int)r,
+            (unsigned long long)g_aq_tail_peek(), (unsigned long long)g_aq_done_peek(),
+            (unsigned long long)nxrt_nvn_presents(), elapsed / 1e6, caller);
+    }
     return r;
 }
 static NVNsyncWaitResult sync_wait_(const NVNsync *s, uint64_t timeout) {
     sync_t *o = (sync_t *)s;
-    if (!o->fenced && timeout && aq_busy()) aq_drain();   // a fence inside a command buffer still queued for translation (OP_FENCE_SYNC): it is set once that is translated
-    if (!o->fenced) return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
-    int (*w)(uint64_t, uint64_t) = o->fenced == 2 ? gfx_wait_acq : gfx_wait;
-    uint64_t fv = o->fence;
+    uint32_t kind = nvn_sync_kind(o);
+    if (!kind && timeout) {
+        TRS0();
+        aq_translate_sync(o, timeout);   // a command buffer still queued for translation can own this fence
+        TRS1("nvnSyncWait (translation)");
+        kind = nvn_sync_kind(o);
+    }
+    if (!kind) return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
+    int (*w)(uint64_t, uint64_t) = kind == 2 ? gfx_wait_acq : gfx_wait;
+    uint64_t queued_value = nvn_sync_value(o), fv = queued_value;
     if (!aq_resolve(&fv, timeout)) return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;   // a queued submission's fence: its translation first
-    if (fv != o->fence) o->fence = fv;
-    if (w(fv, 0)) return NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED;
+    if (fv != queued_value)
+        __atomic_compare_exchange_n(&o->fence, &queued_value, fv, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+    int ready;
+    {
+        TRS0();
+        ready = w(fv, 0);
+        TRS1("nvnSyncWait (completion probe)");
+    }
+    if (ready) return NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED;
     TRS0(); uint64_t t0 = now_ns(); int ok = w(fv, timeout); atomic_fetch_add(&g_sync_ns, now_ns() - t0); TRS1("nvnSyncWait (blocked)");   // the frame's blocked SyncWait time (@sync_ms)
     return ok ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
 }
@@ -1314,7 +1363,9 @@ typedef struct {
     win_t *w; int idx; const tex_t *t; int crop[4]; double period;
     const void *native; uint64_t frame_number, submitted_tick, ticket;
 } aop_t;   // kind 1 submit, 2 present
-static aop_t g_aq[AQ_N]; static uint64_t g_aq_tail, g_aq_npres;   // g_aq_tail: sequence number of the last queued op (op seq goes to slot seq % AQ_N)
+static aop_t g_aq[AQ_N];
+static _Atomic uint64_t g_aq_tail;   // last queued op; also read by waiters before taking g_aq_mu
+static uint64_t g_aq_npres;
 static _Atomic uint64_t g_aq_done, g_aq_head;   // the last op finished; the last op taken
 static struct { uint64_t seq, fence; } g_aq_f[AQ_FN];   // the timeline value after op seq (its fence)
 static pthread_mutex_t g_aq_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_aq_cv = PTHREAD_COND_INITIALIZER, g_aq_done_cv = PTHREAD_COND_INITIALIZER;
@@ -1381,6 +1432,26 @@ static int aq_wait_seq(uint64_t seq, uint64_t timeout) {   // 1 once op seq is d
     return ok;
 }
 static void aq_drain(void) { if (aq_on()) aq_wait_seq(g_aq_tail, UINT64_MAX); }
+static void aq_translate_sync(const sync_t *sync, uint64_t timeout) {
+    if (!aq_busy()) return;
+    static int target_fence = -1;
+    int enabled = __atomic_load_n(&target_fence, __ATOMIC_RELAXED);
+    if (enabled < 0) {
+        const char *option = getenv("SWR_SYNC_TARGET_FENCE");
+        enabled = option && !strcmp(option, "1");
+        __atomic_store_n(&target_fence, enabled, __ATOMIC_RELAXED);
+    }
+    if (!enabled || timeout != UINT64_MAX) { aq_drain(); return; }
+    // At most the calls already queued when the wait starts. As soon as this submission has a timeline
+    // value, the backend can wait on that value while the translation thread works through later calls.
+    dm_host_work++;
+    pthread_mutex_lock(&g_aq_mu);
+    const uint64_t tail = g_aq_tail;
+    while (atomic_load(&g_aq_done) < tail && !nvn_sync_kind(sync))
+        pthread_cond_wait(&g_aq_done_cv, &g_aq_mu);
+    pthread_mutex_unlock(&g_aq_mu);
+    dm_host_work--;
+}
 static uint64_t aq_fence_now(void) {   // the fence of everything queued so far
     if (!aq_on()) return gfx_last_fence();
     pthread_mutex_lock(&g_aq_mu); uint64_t t = g_aq_tail, d = atomic_load(&g_aq_done); pthread_mutex_unlock(&g_aq_mu);
@@ -1388,11 +1459,16 @@ static uint64_t aq_fence_now(void) {   // the fence of everything queued so far
 }
 static int aq_resolve(uint64_t *fence, uint64_t timeout) {   // a queued fence (AQ_SEQ) becomes its timeline value once translated; 0 = not translated within timeout
     if (!(*fence & AQ_SEQ)) return 1;
+    TRS0();
     uint64_t seq = *fence & ~AQ_SEQ;
-    if (!aq_wait_seq(seq, timeout)) return 0;
+    if (!aq_wait_seq(seq, timeout)) {
+        TRS1("nvnSyncWait (queued fence translation)");
+        return 0;
+    }
     pthread_mutex_lock(&g_aq_mu);
     *fence = g_aq_f[seq % AQ_FN].seq == seq ? g_aq_f[seq % AQ_FN].fence : gfx_last_fence();   // long done (its entry reused): any later value is complete no sooner, so it is safe
     pthread_mutex_unlock(&g_aq_mu);
+    TRS1("nvnSyncWait (queued fence translation)");
     return 1;
 }
 NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h) {
@@ -1534,7 +1610,7 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
     if (tk) gfx_present_wait(tk);
     uint64_t waited = now_ns() - t0; if (waited > 50000) atomic_fetch_add(&g_acq_wait_ns, waited);
     if (trs_on()) LOG("[sync] acquire idx %d sync %p waited %.2f ms ticket %llx", *idx, (void *)s, (now_ns() - t0) / 1e6, (unsigned long long)tk);
-    if (s) { ((sync_t *)s)->fence = aq_fence_now(); ((sync_t *)s)->fenced = 2; }   // the texture is free once the submissions before this point have completed (fenced 2: an acquire's sync)
+    if (s) nvn_sync_publish((sync_t *)s, 2, aq_fence_now());   // the texture is free once the submissions before this point have completed
     if (!atomic_fetch_add(&g_acquires, 1)) frame_request("WindowAcquireTexture", *idx);
     TRS1("nvnWindowAcquireTexture");
     return NVN_WINDOW_ACQUIRE_TEXTURE_RESULT_SUCCESS;
@@ -2374,7 +2450,7 @@ int nvn_host_write_texture(const void *nvntex, const void *src, int w, int h, si
 int nvn_host_signal_sync(void *nvnsync) {
     sync_t *o = nvnsync;
     if (!o || o->magic != MAGIC('S', 'Y', 'N', 'C')) return -1;
-    o->fence = 0; o->fenced = 1; return 0;
+    nvn_sync_publish(o, 1, 0); return 0;
 }
 NVN(nvnTextureFlushTexels, void, const NVNtexture *t, const NVNtextureView *v, const NVNcopyRegion *r) { (void)t; (void)v; (void)r; }   // unified memory + dirty page tracking: nothing to flush
 

@@ -18,6 +18,17 @@ ask() {
   else return 1; fi
 }
 
+if [[ "${1:-}" == "--prepare" || "${1:-}" == "--play" ]] &&
+   ! [[ "${1:-}" == "--play" && "${RECOMPLAUNCHER:-}" == 1 && -z "${RECOMPLAUNCHER_VERSION:-}" ]]; then
+  for c in python3.14 python3.13 python3.12 python3; do
+    if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' >/dev/null 2>&1; then
+      exec "$c" -B -m launcher "$@"
+    fi
+  done
+  echo "Orbitals needs Python 3.12 or newer." >&2
+  exit 1
+fi
+
 if [[ "${1:-}" == "--menu" ]]; then
   target="${XDG_DATA_HOME:-$HOME/.local/share}/applications/orbitals-pc-recomp.desktop"
   if ask "Add Orbitals PC Recomp to the application menu?

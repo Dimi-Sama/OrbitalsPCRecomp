@@ -105,6 +105,9 @@ class GraphicsTest(unittest.TestCase):
                 self.assertIn("--docked=1", argv)
                 self.assertEqual(env["SWR_WINDOW_SIZE"], "2560x1440")
                 self.assertEqual(env["NXRT_VK_UPSCALE"], "fsr1")
+                self.assertEqual(env["NXRT_VK_STRETCH_WIDE"], "0")
+                _, stretch_env = core.launch_options(game, run, self.root / "cache", session_settings | {"stretch_wide": True})
+                self.assertEqual(stretch_env["NXRT_VK_STRETCH_WIDE"], "1")
                 overlay = run / core.DATA / "romfs_overlay" / graphics.ENGINE
                 self.assertEqual(overlay.read_text(encoding="utf-8"),
                                  f"[SystemSettings]\nr.SecondaryScreenPercentage.GameViewport={percent}\n")
@@ -121,6 +124,33 @@ class GraphicsTest(unittest.TestCase):
         with patch.object(core, "session_directory", return_value=run), patch.object(core.subprocess, "Popen"):
             core.launch(game, self.profiles)
         self.assertIn("\nue_fps=30\n", (run / "Orbitals.ini").read_text(encoding="utf-8"))
+
+    def test_tv_resolution_replaces_the_installation_value_only_in_tv_mode(self):
+        native = self.root / "game"
+        build_fixture(native)
+        ini = "display_resolution=1620\n  display_resolution =2160\nlog=1\n"
+        (native / "Orbitals.ini").write_text(ini, encoding="utf-8")
+        game = core.installation(native)
+        for preset, resolution, expected in (
+            ("High", "1080p (console)", []),
+            ("High", "1440p", ["display_resolution=1440"]),
+            ("High", "2560×1080 (ultrawide)", ["display_resolution=2560x1080"]),
+            ("High", "3440×1440 (ultrawide)", ["display_resolution=3440x1440"]),
+            ("Low", "1440p", []),
+            ("Low", "2560×1080 (ultrawide)", []),
+        ):
+            with self.subTest(preset=preset, resolution=resolution):
+                self.profiles.update_active(settings={"gfx_preset": preset, "tv_resolution": resolution})
+                run = core.session_directory(game, self.profiles)
+                self.addCleanup(core.prune_run_payload, run)
+                with patch.object(core, "session_directory", return_value=run), patch.object(core.subprocess, "Popen"):
+                    core.launch(game, self.profiles)
+                lines = (run / "Orbitals.ini").read_text(encoding="utf-8").splitlines()
+                self.assertIn("log=1", lines)
+                self.assertEqual([line for line in lines if line.lstrip().startswith("display_resolution")], expected)
+        self.assertEqual((native / "Orbitals.ini").read_text(encoding="utf-8"), ini)
+        with self.assertRaises(core.LauncherError):
+            core.validate_settings(self.profiles.settings | {"tv_resolution": "8K"})
 
 
 class UpdateCheckTest(unittest.TestCase):
@@ -215,6 +245,8 @@ class InstallTest(unittest.TestCase):
             self.assertEqual(core.linux_install_command(self.root / "game files", self.root / "games"),
                              ["/usr/bin/bash", str(script), str(self.root / "game files"),
                               str(self.root / "games/Orbitals"), "2"])
+            custom = self.root / "Jeux locaux" / "Orbitals été"
+            self.assertEqual(core.linux_install_command(self.root / "game files", self.root / "games", custom)[-2], str(custom))
 
     def test_progress_log_and_installation(self):
         dump = self.root / "dump"

@@ -39,7 +39,7 @@ for name in exefs romfs; do
 done
 
 runtime="$repo/bin/runtime_linux_x11"
-if [[ -x "$runtime" ]]; then
+if [[ -x "$runtime" ]] && "$python" -B switchrecomp.py --check-runtime "$runtime"; then
     echo '[3/5] Using the Linux runtime included in the archive'
 else
     echo '[3/5] Building the Vulkan layer and Linux runtime'
@@ -48,6 +48,14 @@ else
 fi
 
 echo '[4/5] Recompiling your copy of Orbitals'
-"$python" -B switchrecomp.py "$game_data" --out Orbitals --outdir "$out_dir" \
-    --runtime "$runtime" --target linux --backend x11 --cc gcc --jobs "$jobs"
+compile_args=("$game_data" --out Orbitals --outdir "$out_dir" --runtime "$runtime" --target linux --backend x11 --cc gcc --jobs "$jobs")
+if [[ -n "${ORBITALS_OBJECT_CACHE:-}" ]]; then compile_args+=(--object-cache "$ORBITALS_OBJECT_CACHE"); fi
+if [[ "${ORBITALS_NO_COPY_DATA:-}" == 1 ]]; then compile_args+=(--no-copy-data); fi
+if "$python" -B switchrecomp.py "${compile_args[@]}" --check-module; then
+    if ! cmp -s -- "$runtime" "$out_dir/Orbitals"; then
+        install -m 755 -- "$runtime" "$out_dir/Orbitals"
+    fi
+else
+    "$python" -B switchrecomp.py "${compile_args[@]}"
+fi
 echo "[5/5] Ready to play from $out_dir"

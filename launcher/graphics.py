@@ -15,6 +15,25 @@ GUS = "Orbitals/Saved/Config/Switch2/GameUserSettings.ini"
 ENGINE = "Orbitals/Saved/Config/Switch2/Engine.ini"
 RENDER_SCALE = {"960x540": "50", "1280x720": "66.6667", "1600x900": "83.3333"}
 RENDER_MODES = ("TV", "Portable", *RENDER_SCALE)
+TV_RESOLUTIONS_BY_ASPECT = {
+    "16:9": {"1080p (console)": 0, "1440p": 1440, "1620p": 1620, "1800p": 1800, "2160p (4K)": 2160},
+    "21:9": {"2560×1080 (ultrawide)": "2560x1080", "3440×1440 (ultrawide)": "3440x1440"},
+    "32:9": {"3840×1080 (32:9)": "3840x1080", "5120×1440 (32:9)": "5120x1440"},
+}
+TV_RESOLUTIONS = {label: value for choices in TV_RESOLUTIONS_BY_ASPECT.values() for label, value in choices.items()}
+
+
+def tv_aspect_ratio(resolution):
+    return next((aspect for aspect, choices in TV_RESOLUTIONS_BY_ASPECT.items() if resolution in choices), "16:9")
+
+
+def closest_tv_resolution(aspect, resolution):
+    """Keep the height when possible when switching between formats."""
+    def height(value):
+        return int(value.split("x", 1)[1]) if isinstance(value, str) else value or 1080
+
+    current_height = height(TV_RESOLUTIONS.get(resolution, 0))
+    return min(TV_RESOLUTIONS_BY_ASPECT[aspect].items(), key=lambda choice: abs(height(choice[1]) - current_height))[0]
 
 # individual options beyond the 3D resolution: none validated in v0.1 (kept as a table so a measured one can be added with its preset values)
 OPTIONS = {}
@@ -45,10 +64,11 @@ FPS_WARNINGS = {
 MODE_NOTES = {
     "TV": "TV 3D resolution: the game renders its 3D at 1920×1080 (2 × 960×1080 in co-op).",
     "Portable": "Handheld 3D resolution: the game renders its 3D at 1600×900 (2 × 800×900 in co-op), then the picture at 1080p.",
-    **{size: f"{size.replace('x', '×')} scene resolution with the TV profile. The game composites the HUD at 1080p." for size in RENDER_SCALE},
+    **{size: f"{size.replace('x', '×')} scene resolution with the TV profile. The HUD follows TV resolution." for size in RENDER_SCALE},
 }
 # Output sizes are the physical window/swapchain dimensions.
-OUTPUT_SIZES = ("960x540", "1280x720", "1280x800", "1600x900", "1920x1080", "2560x1440", "3840x2160")
+OUTPUT_SIZES = ("960x540", "1280x720", "1280x800", "1600x900", "1920x1080", "2560x1080",
+                "2560x1440", "3440x1440", "3840x1080", "3840x2160", "5120x1440")
 
 
 def output_sizes(native=None):

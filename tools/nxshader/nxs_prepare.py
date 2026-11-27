@@ -239,6 +239,14 @@ def main(argv=None):
         pair_dirs = extract_and_decode(a.romfs, a.work, a.decoder)
         if not pair_dirs: raise RuntimeError('no Unreal IoStore container with shader code under ' + a.romfs)
         counts, shard_caches = translate(pair_dirs, a.cache, a.work, chain, a.workers, a.xlate, a.dotnet)
+        gate = os.environ.get('NXSHADER_PREP_PUBLISH_GATE')
+        if gate:
+            emit('publish_wait')
+            deadline = time.monotonic() + 30
+            while not os.path.isfile(gate):
+                if time.monotonic() >= deadline:
+                    raise RuntimeError('launcher did not authorise writing the shader cache')
+                time.sleep(0.05)
         publish(a.cache, chain, shard_caches)
         shutil.rmtree(os.path.join(a.work, chain), ignore_errors=True)
         for other in os.listdir(a.work):   # shards of an older chain: nothing will finish them

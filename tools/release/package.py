@@ -19,7 +19,9 @@ import argparse, hashlib, io, json, os, subprocess, sys, tarfile, time, zipfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, '..', '..'))
 sys.path.insert(0, HERE)
+sys.path.insert(0, ROOT)
 import audit_rules
+import module_build
 
 THIRD = {   # origin and license of the prebuilt files
     'bin/runtime_win64_win32.exe': ('built from this source tree (switchrecomp.py, win64/win32)',
@@ -38,6 +40,19 @@ def git(*a):
 
 
 def sha(b): return hashlib.sha256(b).hexdigest()
+
+
+def platform_files(files, programs, binaries):
+    result = []
+    for path, mode, data in files:
+        if path == 'recomplauncher.json':
+            manifest = json.loads(data)
+            for step in ('start', 'prepare'):
+                manifest[step]['program'] = programs
+            manifest['prepare']['done'].extend(f'{{data}}/games/Orbitals/{name}' for name in binaries)
+            data = (json.dumps(manifest, ensure_ascii=False, indent=2) + '\n').encode('utf-8')
+        result.append((path, mode, data))
+    return result
 
 
 def source_files(ref):
@@ -74,6 +89,12 @@ def main():
     prefix = f'OrbitalsPCRecomp-{a.version}/'
     os.makedirs(a.out, exist_ok=True)
     src = source_files(a.ref)
+    contents = {path: data for path, _, data in src}
+    if "module_build.py" in contents:
+        contract = module_build.runtime_contract(contents.__getitem__)
+        for binary in (a.windows_runtime, a.linux_runtime):
+            if binary and module_build.marker_value(binary, module_build.RUNTIME_MARKER) != contract:
+                raise SystemExit(f"The runtime does not match the code contract in {a.ref}: {binary}")
     src.append(('COMMIT', 0o644, (commit[:12] + '\n').encode()))   # switchrecomp.py release_id: the commit a build from this archive names in its log
     audit('the source tree', src)
     manifest = {'version': a.version, 'commit': commit, 'made': time.strftime('%Y-%m-%dT%H:%M:%S'), 'archives': {}}
@@ -97,7 +118,9 @@ def main():
 
     def record(archive, files):
         manifest['archives'][archive] = [{'path': f, 'bytes': len(d), 'sha256': sha(d),
-                                          'origin': THIRD.get(f, (f'source tree at {short}',))[0],
+                                          'origin': ('platform manifest generated from the source tree at ' + short
+                                                     if f == 'recomplauncher.json' and '-source.' not in archive
+                                                     else THIRD.get(f, (f'source tree at {short}',))[0]),
                                           'license': THIRD.get(f, (None, 'see LICENSE.txt / NOTICE.txt / the file\'s own header'))[1]} for f, _, d in sorted(files)]
 
     outs = []
@@ -109,10 +132,13 @@ def main():
             extra.append(('bin/SDL3.dll', 0o644, open(a.sdl3, 'rb').read()))
             lic = os.path.join(os.path.dirname(a.sdl3), 'SDL3-LICENSE.txt')
             if os.path.isfile(lic): extra.append(('bin/SDL3-LICENSE.txt', 0o644, open(lic, 'rb').read()))
-        files = src + extra; audit('the Windows kit', files)
+        files = platform_files(src, ['Orbitals-Launcher.bat'], ['Orbitals.exe', 'Orbitals_code.dll']) + extra
+        audit('the Windows kit', files)
         nm = f'OrbitalsPCRecomp-{a.version}-windows-x64.zip'; outs.append(write_zip(nm, files)); record(nm, files)
     if a.linux_runtime:
-        files = src + [('bin/runtime_linux_x11', 0o755, open(a.linux_runtime, 'rb').read())]; audit('the Linux kit', files)
+        files = platform_files(src, ['AppRun', 'Orbitals-Launcher.sh', 'OrbitalsPCRecomp-x86_64.AppImage'], ['Orbitals', 'Orbitals_code.so'])
+        files.append(('bin/runtime_linux_x11', 0o755, open(a.linux_runtime, 'rb').read()))
+        audit('the Linux kit', files)
         nm = f'OrbitalsPCRecomp-{a.version}-linux-x64.tar.gz'; outs.append(write_tgz(nm, files)); record(nm, files)
     json.dump(manifest, open(os.path.join(a.out, 'MANIFEST.json'), 'w'), indent=1)
     with open(os.path.join(a.out, 'SHA256SUMS.txt'), 'w', newline='\n') as f:

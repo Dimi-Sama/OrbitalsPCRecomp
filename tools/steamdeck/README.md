@@ -15,14 +15,14 @@ python tools/steamdeck/cross/build.py code --jobs 10 --generated build/steamdeck
 
 `build/steamdeck-game/Orbitals_data/{exefs,romfs}` should be junctions to the game data before the generation, otherwise
 `switchrecomp.py` copies the 9.6 GB RomFS. `build/steamdeck-game/Orbitals.hints` is the hint list the generation uses.
-The module is 1.1 GB with debug info; `strip --strip-debug` (on the Deck, SteamOS has binutils) brings it to 390 MB.
+Copy the generated `Orbitals_code.build.json` alongside the module. The recorded checksum covers the linked output.
 
 ## Install on the Deck (`/home/deck/Downloads/Orbital`)
 
 Folder layout (no root, nothing outside the folder):
 
 ```
-Orbitals  Orbitals_code.so  Orbitals.ini  Orbitals.hints  orbitals-deck.sh
+Orbitals  Orbitals_code.so  Orbitals_code.build.json  Orbitals.ini  Orbitals.hints  orbitals-deck.sh
 Orbitals_nvn/cache/   (translated shaders: required, Linux has no on-demand translation)
 Orbitals_nvn/vk/      (pipeline cache: pipelines-1002-1435.bin is RADV's for this Deck, optional)
 Orbitals_data/exefs/  Orbitals_data/romfs/  Orbitals_data/save/

@@ -35,6 +35,12 @@ typedef struct {
     uint32_t subgroup_stages, subgroup_ops, subgroup_size;
 } vk_caps;
 
+typedef enum {
+    VK_NO_CONTRACTION_OFF,
+    VK_NO_CONTRACTION_HULL,
+    VK_NO_CONTRACTION_GRAPHICS,
+} vk_no_contraction;
+
 typedef struct {
     VkInstance inst;
     VkPhysicalDevice pd;
@@ -44,8 +50,11 @@ typedef struct {
     VkPhysicalDeviceProperties props;
     VkPhysicalDeviceTexelBufferAlignmentProperties texel_align;
     uint32_t max_push_desc;                   // VK_KHR_push_descriptor: maxPushDescriptors (0 without the extension)
-    int shared_volatile;                      // shared memory accesses made volatile in the translated shaders (vkspv_volatile_shared): not on NVIDIA's own driver
-    VkShaderStageFlags sg32_stages;           // stages whose subgroups are made 32 lanes wide (requiredSubgroupSize), as NVN's: 0 = none
+    int shared_volatile;                      // make translated shared-memory accesses volatile (vkspv_volatile_shared)
+    int warp_sync;                            // scoped workaround for the particle sort (vk_shader.c)
+    vk_no_contraction no_contraction;         // arithmetic precision workaround for materials and world-space transforms
+    VkShaderStageFlags sg32_stages;           // stages eligible for 32 lanes (requiredSubgroupSize), as NVN's: 0 = none
+    int compute32_particle_sort_only;         // RADV NAVI10/NAVI14: other compute shaders keep native subgroups
     VkPipelineShaderStageRequiredSubgroupSizeCreateInfo sg32;   // the chained structure (requiredSubgroupSize 32)
     VkPhysicalDeviceMemoryProperties memp;
     VkPhysicalDeviceFeatures f10;             // enabled core 1.0 features
@@ -77,6 +86,7 @@ int vk_mem_type(uint32_t bits, VkMemoryPropertyFlags want, VkMemoryPropertyFlags
 void vk_name(uint64_t handle, VkObjectType type, const char *name);   // debug-utils object name (validation builds)
 // A lost device (#12, #17): the first VK_ERROR_DEVICE_LOST logs what the GPU was doing (the checkpoints each stage reached) and the driver's fault report
 void vk_lost(const char *where, VkResult r);
+void vk_report_checkpoints(void);                             // a progress snapshot can also be taken during a stall
 uint64_t vk_checkpoint(VkCommandBuffer cb, char kind, const char *key, uint32_t x, uint32_t y, uint32_t z, int indirect);   // the checkpoint's number, 0 when off
 uint64_t vk_ck_next(void);
 const char *vk_ck_describe(uint64_t s, char *out, size_t n);   // a checkpoint as vk_lost prints it

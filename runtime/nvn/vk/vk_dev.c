@@ -2,6 +2,8 @@
 // Written from the Vulkan 1.3 specification. The list of optional features follows what the NVN replay needs; Ryujinx's VulkanInitialization.cs (MIT,
 // git.ryujinx.app) was read for which of them a Switch GPU's SPIR-V commonly uses.
 #include "vk_internal.h"
+#include "vk_flight.h"
+#include "vk_subgroups.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,6 +65,23 @@ void vk_memreport_log(void) {
     uint64_t all = g_mr_all; ReleaseSRWLockShared(&g_mr_lk);
     VKLOG("the driver holds %llu MB in heap 0:%s", (unsigned long long)(all >> 20), b);
 }
+static int radv_gfx10_family(const VkPhysicalDeviceProperties *props, VkDriverId driver) {
+    if (props->vendorID != 0x1002 || driver != VK_DRIVER_ID_MESA_RADV) return 0;
+    const char *family = strstr(props->deviceName, "RADV ");
+    if (!family) return 0;
+    family += sizeof("RADV ") - 1;
+    size_t length = strcspn(family, " ()");
+    // RADV reports the Mesa family in both the driver name and the marketing-name suffix.
+    static const char *const names[] = {
+        "NAVI10", "NAVI12", "NAVI14", "NAVI21", "NAVI22", "NAVI23", "NAVI24",
+        "SIENNA_CICHLID", "NAVY_FLOUNDER", "DIMGREY_CAVEFISH", "BEIGE_GOBY",
+        "VANGOGH", "REMBRANDT", "YELLOW_CARP", "RAPHAEL_MENDOCINO", "RAPHAEL", "MENDOCINO",
+    };
+    for (size_t i = 0; i < sizeof(names) / sizeof(*names); i++)
+        if (strlen(names[i]) == length && !strncmp(family, names[i], length)) return 1;
+    return 0;
+}
+
 int vk_dev_open(const vk_dev_opts *o, const char *const *inst_exts, uint32_t n_inst_exts) {
     if (g_vk.up) return 0;
     InitializeSRWLock(&g_vk.qlock);
@@ -223,14 +242,19 @@ int vk_dev_open(const vk_dev_opts *o, const char *const *inst_exts, uint32_t n_i
     else if (!f2.features.textureCompressionBC) miss = "textureCompressionBC";
     else if (!f13.maintenance4) miss = "maintenance4";
     if (miss) { VKRED("%s lacks %s, which the renderer needs", g_vk.props.deviceName, miss); return -1; }
-    // Enabled: every supported feature except robustness that costs performance (robustBufferAccess stays on NVIDIA, as Ryujinx does) and capture/replay addresses
+    VkPhysicalDeviceDriverProperties dp = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    VkPhysicalDeviceProperties2 driver_props = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &dp};
+    vkGetPhysicalDeviceProperties2(g_vk.pd, &driver_props);
+    int radv_gfx10 = radv_gfx10_family(&g_vk.props, dp.driverID);
+
+    // Leave image and robustness2 settings independent so the issue #7 test changes only buffer bounds handling by default.
     VkPhysicalDeviceFeatures en = f2.features;
-    en.robustBufferAccess = g_vk.props.vendorID == 0x10de && f2.features.robustBufferAccess;
     en.inheritedQueries = 0;
     // NXRT_VK_ROBUST (test, the GPU freeze): 1 = robust image access too (image loads and stores outside the image are dropped), 2 = robustness2 for images and buffers as well
     const char *rob_e = getenv("NXRT_VK_ROBUST"); int rob = rob_e ? atoi(rob_e) : 0;
+    en.robustBufferAccess = f2.features.robustBufferAccess &&
+                            (g_vk.props.vendorID == 0x10de || rob >= 1 || (!rob_e && radv_gfx10));
     f13.robustImageAccess = rob >= 1 && f13.robustImageAccess; f12.bufferDeviceAddressCaptureReplay = 0; f12.bufferDeviceAddressMultiDevice = 0; f11.protectedMemory = 0;
-    if (rob >= 1 && f2.features.robustBufferAccess) en.robustBufferAccess = VK_TRUE;
     // NXRT_VK_MIN_FEATURES=1 (test, the GPU freeze): of the Vulkan 1.1-1.3 features, only those the renderer and the translated shaders use, as Ryujinx asks,
     // instead of everything the driver offers (some change how it compiles shaders). Off: buffer device addresses (2 shaders of 11,561 use them)
     if (getenv("NXRT_VK_MIN_FEATURES") && *getenv("NXRT_VK_MIN_FEATURES") == '1') {
@@ -246,7 +270,9 @@ int vk_dev_open(const vk_dev_opts *o, const char *const *inst_exts, uint32_t n_i
         f11 = k11; f12 = k12; f13 = k13;
         VKLOG("Vulkan 1.1-1.3 features: only those the renderer uses (NXRT_VK_MIN_FEATURES=1)");
     }
-    if (rob) VKLOG("robustness for the freeze test: robust image access %d, robustness2 %s", f13.robustImageAccess, rob >= 2 ? "asked" : "off");
+    VKLOG("robustness: buffer access %d, image access %d, robustness2 %s (%s)",
+          en.robustBufferAccess, f13.robustImageAccess, rob >= 2 ? "asked" : "off",
+          rob_e ? "NXRT_VK_ROBUST" : radv_gfx10 ? "RADV gfx10 default" : "default");
     for (int i = 0; i < NEF; i++) {
         if (!fs[i]) continue;
         if (ef[i].st == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT) {   // task and mesh shaders alone: the others need features this device set does not ask for
@@ -329,22 +355,49 @@ int vk_dev_open(const vk_dev_opts *o, const char *const *inst_exts, uint32_t n_i
     { VkPhysicalDeviceVulkan13Properties p13 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES};
       VkPhysicalDeviceProperties2 pp5 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &p13};
       vkGetPhysicalDeviceProperties2(g_vk.pd, &pp5);
-      const char *e = getenv("NXRT_VK_SUBGROUP32"); int on = !e || *e != '0';
-      g_vk.sg32_stages = on && g_vk.f13.subgroupSizeControl && p13.minSubgroupSize <= 32 && p13.maxSubgroupSize >= 32 ? p13.requiredSubgroupSizeStages : 0;
+      const char *e = getenv("NXRT_VK_SUBGROUP32");
+      g_vk.compute32_particle_sort_only = !e && vk_radv_navi10_or_navi14(&g_vk.props, dp.driverID);
+      VkShaderStageFlags supported = g_vk.f13.subgroupSizeControl && p13.minSubgroupSize <= 32 && p13.maxSubgroupSize >= 32
+          ? p13.requiredSubgroupSizeStages : 0;
+      g_vk.sg32_stages = vk_subgroup32_stages(supported, e, g_vk.compute32_particle_sort_only);
       g_vk.sg32 = (VkPipelineShaderStageRequiredSubgroupSizeCreateInfo){VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO, NULL, 32};
-      VKLOG("subgroup size: %u to %u lanes, required size settable in stages %#x; 32 lanes asked in stages %#x%s", p13.minSubgroupSize, p13.maxSubgroupSize,
-            p13.requiredSubgroupSizeStages, g_vk.sg32_stages, on ? "" : " (NXRT_VK_SUBGROUP32=0)"); }
-    // The game's compute shaders were compiled for NVIDIA's lockstep warps; some hand values between lanes through shared memory with no barrier
+      VKLOG("subgroup size: default %u lanes, range %u to %u; required size settable in stages %#x; 32 lanes asked in stages %#x%s",
+            sg.subgroupSize, p13.minSubgroupSize, p13.maxSubgroupSize,
+            p13.requiredSubgroupSizeStages, g_vk.sg32_stages,
+            g_vk.compute32_particle_sort_only ? " (RADV NAVI10/NAVI14: compute 32 lanes for particle sort only)" :
+            e && *e == '0' ? " (NXRT_VK_SUBGROUP32=0)" : ""); }
+    // The game's compute shaders can hand values between lanes through shared memory with no barrier
     // (the particle sort d032ce5090303e01: duplicated and 0x0badf00d indices on the Steam Deck, giant green / blue sprites in the space scene).
-    // Other compilers may cache or reorder those accesses (RADV's ACO did); volatile keeps them as written. NVIDIA's own driver draws it right
-    // without, and stays the reference. NXRT_VK_SHARED_VOLATILE=0 / 1 forces it.
-    { VkPhysicalDeviceDriverProperties dp = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
-      VkPhysicalDeviceProperties2 pp6 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &dp};
-      vkGetPhysicalDeviceProperties2(g_vk.pd, &pp6);
+    // RADV benefits from Volatile. On the proprietary NVIDIA driver the RTX 4090 report found more flashes with it.
+    {
+      VKLOG("driver properties: %s (id %d), %s", dp.driverName, (int)dp.driverID,
+            dp.driverInfo[0] ? dp.driverInfo : "no driver info reported");
       const char *e = getenv("NXRT_VK_SHARED_VOLATILE");
-      g_vk.shared_volatile = e && *e ? *e == '1' : dp.driverID != VK_DRIVER_ID_NVIDIA_PROPRIETARY;
+      int override = e && (!strcmp(e, "0") || !strcmp(e, "1"));
+      int nvidia = dp.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY;
+      g_vk.shared_volatile = override ? *e == '1' : !nvidia;
       VKLOG("driver %s (id %d): shared memory accesses %s%s", dp.driverName, (int)dp.driverID, g_vk.shared_volatile ? "volatile" : "as compiled",
-            e && *e ? " (NXRT_VK_SHARED_VOLATILE)" : ""); }
+            override ? " (NXRT_VK_SHARED_VOLATILE)" : "");
+      const char *warp = getenv("NXRT_VK_WARP_SYNC"), *contract = getenv("NXRT_VK_NO_CONTRACT");
+      int warp_override = warp && (!strcmp(warp, "0") || !strcmp(warp, "1"));
+      int warp_requested = warp_override ? *warp == '1' : nvidia;
+      int warp_supported = (sg.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) && (sg.supportedOperations & VK_SUBGROUP_FEATURE_BASIC_BIT) &&
+          (sg.subgroupSize == 32 || (g_vk.sg32_stages & VK_SHADER_STAGE_COMPUTE_BIT));
+      g_vk.warp_sync = warp_requested && warp_supported;
+      g_vk.no_contraction = VK_NO_CONTRACTION_GRAPHICS;
+      if (contract && !strcmp(contract, "0")) g_vk.no_contraction = VK_NO_CONTRACTION_OFF;
+      if (contract && !strcmp(contract, "1")) g_vk.no_contraction = VK_NO_CONTRACTION_HULL;
+      VKLOG("shader workarounds: warp sync %s%s, NoContraction %s",
+            g_vk.warp_sync ? "on" : warp_requested ? "unavailable (requires 32-lane compute subgroups)" : "off",
+            warp_override ? " (NXRT_VK_WARP_SYNC)" : "",
+            g_vk.no_contraction == VK_NO_CONTRACTION_GRAPHICS ? "vertex + fragment" :
+            g_vk.no_contraction == VK_NO_CONTRACTION_HULL ? "hull only" : "off");
+      const char *stretch = getenv("NXRT_VK_STRETCH_WIDE");
+      VKLOG("Vulkan startup options: NXRT_VK_SUBGROUP32=%d (stage mask %#x), NXRT_VK_SHARED_VOLATILE=%d, "
+            "NXRT_VK_WARP_SYNC=%d, NXRT_VK_NO_CONTRACT=%d (configured NXRT_VK_WB_GPU=%d, NXRT_VK_SHADOW_LAZY=%d, NXRT_VK_FLIGHT=%d, NXRT_VK_STRETCH_WIDE=%d)",
+            g_vk.sg32_stages != 0, g_vk.sg32_stages, g_vk.shared_volatile, g_vk.warp_sync, g_vk.no_contraction,
+            vkc_int("wb_gpu", 0), vkc_int("shadow_lazy", 1), vkc_int("flight", 1),
+            stretch && !strcmp(stretch, "1")); }
     g_vk.max_push_desc = 0;
     if (h->push_descriptor && vkCmdPushDescriptorSetKHR) {
         VkPhysicalDevicePushDescriptorPropertiesKHR pdp = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PUSH_DESCRIPTOR_PROPERTIES_KHR};
@@ -538,13 +591,20 @@ void vk_alloc_stats(uint64_t *blocks, uint64_t *block_bytes, uint64_t *used, uin
     *blocks = n; *block_bytes = n * BLOCK; *used = u; *dedicated = atomic_load(&g_dedicated_bytes);
 }
 
-uint64_t vk_tl_value(void) { uint64_t v = 0; if (g_vk.tl) vkGetSemaphoreCounterValue(g_vk.dev, g_vk.tl, &v); return v; }
+uint64_t vk_tl_value(void) {
+    if (!g_vk.tl || atomic_load(&g_vk.lost)) return 0;
+    uint64_t value = 0;
+    VkResult r = vkGetSemaphoreCounterValue(g_vk.dev, g_vk.tl, &value);
+    vk_lost("a query for the GPU timeline", r);
+    return r == VK_SUCCESS && !atomic_load(&g_vk.lost) ? value : 0;
+}
 int vk_tl_wait(uint64_t value, uint64_t timeout_ns) {
     if (!value) return 1;
+    if (atomic_load(&g_vk.lost)) return 0;
     VkSemaphoreWaitInfo wi = {VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, NULL, 0, 1, &g_vk.tl, &value};
     VkResult r = vkWaitSemaphores(g_vk.dev, &wi, timeout_ns);
     vk_lost("a wait for the GPU", r);
-    return r == VK_SUCCESS;
+    return r == VK_SUCCESS && !atomic_load(&g_vk.lost);
 }
 
 // ---------- A lost device (#12, #17): a checkpoint before each dispatch (and draw) names what the GPU had started and finished when it stopped ----------
@@ -563,7 +623,7 @@ void vk_ck_args(VkCommandBuffer cb, uint64_t seq, VkBuffer b, VkDeviceSize o, ui
     VkBufferCopy r = {o, (VkDeviceSize)(seq % CK_N) * 32, n}; vkCmdCopyBuffer(cb, b, g_cka, 1, &r);
 }
 uint64_t vk_ck_next(void) { return atomic_load(&g_ck_seq) + 1; }
-static const uint32_t *ck_args_of(uint64_t s) { return g_cka_state > 0 ? (const uint32_t *)((const uint8_t *)g_cka_mem.map + (s % CK_N) * 32) : NULL; }
+static const uint32_t *ck_args_of(uint64_t s) { return g_cka_state > 0 && !atomic_load(&g_vk.lost) ? (const uint32_t *)((const uint8_t *)g_cka_mem.map + (s % CK_N) * 32) : NULL; }
 uint64_t vk_checkpoint(VkCommandBuffer cb, char kind, const char *key, uint32_t x, uint32_t y, uint32_t z, int indirect) {
     if (!vkCmdSetCheckpointNV || g_vk.has.checkpoints < (kind == 'd' ? 2 : 1)) return 0;
     uint64_t s = atomic_fetch_add(&g_ck_seq, 1) + 1;
@@ -607,9 +667,7 @@ static void save_vendor_binary(void) {
     free(bin); free(ai); free(vi);
 }
 
-void vk_lost(const char *where, VkResult r) {
-    if (r != VK_ERROR_DEVICE_LOST || !g_vk.dev || atomic_exchange(&g_vk.lost, 1)) return;
-    VKRED("the GPU stopped responding (device lost, first seen at %s); what it was doing:", where);
+void vk_report_checkpoints(void) {
     char t[256];
     if (g_vk.has.checkpoints && vkGetQueueCheckpointData2NV) {
         VkCheckpointData2NV cd[32]; uint32_t n = 32; uint64_t lo = 0, hi = 0;
@@ -625,6 +683,12 @@ void vk_lost(const char *where, VkResult r) {
         if (!n) VKRED("  no checkpoint was reached");
         for (uint64_t s = lo + 1; lo && s <= hi && s <= lo + 400; s++) { VKLOG("[RED]   in flight: %s", ck_text(s, t, sizeof t)); if (*ck_note(s)) VKLOG("[RED]     bound: %s", ck_note(s)); }   // all of them: VKRED printed 8
     } else VKRED("  (no checkpoints on this GPU: they need NVIDIA's VK_NV_device_diagnostic_checkpoints)");
+}
+
+void vk_lost(const char *where, VkResult r) {
+    if (r != VK_ERROR_DEVICE_LOST || !g_vk.dev || atomic_exchange(&g_vk.lost, 1)) return;
+    VKRED("the GPU stopped responding (device lost, first seen at %s); what it was doing:", where);
+    vk_report_checkpoints();
     if (g_vk.has.device_fault && vkGetDeviceFaultInfoEXT) {
         VkDeviceFaultCountsEXT c = {VK_STRUCTURE_TYPE_DEVICE_FAULT_COUNTS_EXT};
         VkDeviceFaultAddressInfoEXT ai[8]; VkDeviceFaultVendorInfoEXT vi[8];

@@ -2,6 +2,12 @@
 
 The upstream recompiler's own history is in [CHANGELOG.txt](CHANGELOG.txt).
 
+## v0.1.6
+
+Liftoff adds quick updates, base-game installation from mixed NUP archives, portable profiles, new controller layouts and Windows gyro aiming.
+TV mode adds high-resolution and experimental ultrawide output through 5120×1440. The runtime includes rendering fixes for NVIDIA and
+RADV RDNA1, as well as a fix for long RomFS paths when launching through RecompLauncher or Quiver on Windows. [Release notes](docs/RELEASE_NOTES_v0.1.6.md)
+
 ## v0.1.5 — first public release
 
 The first release in the public repository. It gathers the private developer previews v0.1.5-preview.1 to .3 on top of v0.1.0;

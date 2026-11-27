@@ -26,8 +26,10 @@ foreach ($need in 'Orbitals.exe', 'Orbitals_code.dll', 'Orbitals_data\exefs', 'O
 }
 if (Get-Process -Name Orbitals -ErrorAction SilentlyContinue) { throw 'Orbitals is already running.' }
 $root = Split-Path -Parent $game
-$toolchain = Join-Path $root 'toolchain'
-$python = Join-Path $root 'python\python.exe'
+$toolchain = Join-Path $game 'toolchain'
+if (-not (Test-Path -LiteralPath $toolchain -PathType Container)) { $toolchain = Join-Path $root 'toolchain' }
+$python = Join-Path $game 'python\python.exe'
+if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { $python = Join-Path $root 'python\python.exe' }
 $dotnet = Join-Path $toolchain 'dotnet10'
 $vulkanTools = Join-Path $toolchain 'vulkan-bin'
 

@@ -178,7 +178,7 @@ static int walk(const uint8_t *p, int depth, uint64_t *budget) {
                 atomic_fetch_add(&g_n.calls, 1); if (walk((const uint8_t *)(uintptr_t)t, depth + 1, budget)) return -1; break; }
             case OP_SIGNAL_EVENT: { volatile uint32_t *val; uint32_t m, v; memcpy(&val, a, 8); memcpy(&m, a + 8, 4); memcpy(&v, a + 12, 4); gfx_sub_event(val, m, v); break; }
             case OP_REPORT_COUNTER: { uint64_t t, ad; memcpy(&t, a, 8); memcpy(&ad, a + 8, 8); gfx_sub_counter(ad, (uint32_t)t); break; }
-            case OP_FENCE_SYNC: { sync_t *s; memcpy(&s, a, 8); if (s) { s->fence = g_fence + 1; s->fenced = 1; } atomic_fetch_add(&g_n.fences, 1); break; }   // the fence this submission commits with
+            case OP_FENCE_SYNC: { sync_t *s; memcpy(&s, a, 8); if (s) nvn_sync_publish(s, 1, g_fence + 1); atomic_fetch_add(&g_n.fences, 1); break; }   // the fence this submission commits with
             case OP_COPY_B2B: { uint64_t s_, d, n; memcpy(&s_, a, 8); memcpy(&d, a + 8, 8); memcpy(&n, a + 16, 8); gfx_sub_copy(s_, d, n); break; }
             case OP_UPDATE_UB: { uint64_t d, n; memcpy(&d, a, 8); memcpy(&n, a + 8, 8);
                 if (24 + n > h.size) { bad_record(p, h, "a uniform update longer than its record"); return -1; }

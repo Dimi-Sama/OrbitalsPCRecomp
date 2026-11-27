@@ -2,6 +2,7 @@
 // Vulkan meet; the enumerant values are the NVN header's and the Vulkan specification's.
 #include "vk_pipe.h"
 #include "vk_hmap.h"
+#include "vk_subgroups.h"
 #include <process.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -458,8 +459,9 @@ VkPipeline vkp_compute(const vks_shader *cs, VkPipelineLayout *layout) {
     if (hit == PIPE_FAILED) return VK_NULL_HANDLE;
     if (hit) return (VkPipeline)hit;
     uint64_t t0 = now_ns();
+    int subgroup32 = vk_compute_has_32_lanes(g_vk.sg32_stages, g_vk.compute32_particle_sort_only, cs->key);
     VkComputePipelineCreateInfo ci = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, NULL, 0,
-                                      {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, (g_vk.sg32_stages & VK_SHADER_STAGE_COMPUTE_BIT) ? &g_vk.sg32 : NULL, 0, VK_SHADER_STAGE_COMPUTE_BIT, cs->mod, "main", NULL}, *layout, VK_NULL_HANDLE, -1};
+                                      {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, subgroup32 ? &g_vk.sg32 : NULL, 0, VK_SHADER_STAGE_COMPUTE_BIT, cs->mod, "main", NULL}, *layout, VK_NULL_HANDLE, -1};
     VkPipeline p = VK_NULL_HANDLE;
     VkResult r = *layout ? vkCreateComputePipelines(g_vk.dev, g_vk.pcache, 1, &ci, NULL, &p) : VK_ERROR_INITIALIZATION_FAILED;
     note_time(t0);

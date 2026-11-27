@@ -3,7 +3,9 @@
 // queue in commit order. The ordering rule of the NVN layer (nvn_mtl.h, gfx_backend.h): every visible effect of GPU completion happens only after
 // the GPU has actually completed the submission.
 #include "vk_submit.h"
+#include "vk_wb_core.h"
 #include <process.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -16,8 +18,9 @@ typedef struct {
     int up_used;
     int deferred; _Atomic int recorded;   // vk_defer.c records its commands; recorded: the recorder has ended its buffers (only then may it go to the queue)
     uint64_t value, t_commit, t_submit;   // t_submit: handed to the queue (SWR_TRACE)
+    unsigned long long trace_commit;     // trace clock at the end of recording
     uint64_t take_seq;   // when it was taken for recording (vks_take_seq): vk_retire waits for every slot taken before it to be committed
-    post_t *posts; size_t nposts, cap;
+    postq_t posts;   // of post_t; room reserved before a dispatch for its landings (vks_post_reserve)
 } slot_t;
 
 static slot_t g_slot[NSLOT];
@@ -26,8 +29,10 @@ static int g_cur = -1;                      // the NVN submission being recorded
 static DWORD g_cur_tid;                     // the thread recording it (M6 phase B: another thread's uploads go to a one-shot of its own, not into this slot)
 static SRWLOCK g_lk = SRWLOCK_INIT;         // slots, order, value assignment
 static CONDITION_VARIABLE g_cv = CONDITION_VARIABLE_INIT;   // a slot freed / a value completed
+static CONDITION_VARIABLE g_submit_cv = CONDITION_VARIABLE_INIT;
 static HANDLE g_thread; static _Atomic int g_stop;
 static int g_batch = 4;                     // NXRT_VK_BATCH: committed submissions held back before one queue submit
+static int g_completion_wake;              // NXRT_VK_COMPLETION_WAKE=1: A/B the idle completion-thread wakeup
 static _Atomic uint64_t g_subs, g_qsubs, g_empty, g_posted;
 #include "game_profile.h"
 #include "nvn_timestamp.h"   // gfx/: NVN counter records count 614.4 MHz ticks of the guest clock
@@ -49,8 +54,11 @@ static int slot_take(void) {
     for (;;) {
         for (int i = 0; i < NSLOT; i++) if (g_slot[i].state == S_FREE) {
             slot_t *s = &g_slot[i];
-            s->state = S_RECORDING; s->up_used = 0; s->value = 0; s->t_submit = 0; s->nposts = 0; s->take_seq = atomic_fetch_add(&g_take_seq, 1) + 1; s->deferred = 0; atomic_store(&s->recorded, 0);
-            { static int rel = -1; if (rel < 0) { const char *e = getenv("NXRT_VK_CB_RELEASE"); rel = !e || *e != '0'; } vkResetCommandPool(g_vk.dev, s->pool, rel ? VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT : 0); }   // kept, 32 pools held a frame's worth each in device memory: over 1 GB past our own count. NXRT_VK_CB_RELEASE=0 keeps them
+            s->state = S_RECORDING; s->up_used = 0; s->value = 0; s->t_submit = 0; s->take_seq = atomic_fetch_add(&g_take_seq, 1) + 1; postq_reset(&s->posts); s->posts.esz = sizeof(post_t); s->deferred = 0; atomic_store(&s->recorded, 0);
+            { VTR0();
+              static int rel = -1; if (rel < 0) { const char *e = getenv("NXRT_VK_CB_RELEASE"); rel = !e || *e != '0'; }
+              vkResetCommandPool(g_vk.dev, s->pool, rel ? VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT : 0);
+              VTR1("vkResetCommandPool"); }   // kept, 32 pools held a frame's worth each in device memory: over 1 GB past our own count. NXRT_VK_CB_RELEASE=0 keeps them
             VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, NULL};
             vkBeginCommandBuffer(s->up, &bi); vkBeginCommandBuffer(s->main, &bi);
             // Submission order alone does not order the work: without this, uploads ran beside the previous slot's last commands, over memory those may still write
@@ -64,7 +72,9 @@ static int slot_take(void) {
 
 // Hands every pending slot to the queue in one call. Caller holds g_lk
 static void flush_locked(void) {
+    if (atomic_load(&g_vk.lost)) return;
     VkSubmitInfo2 si[NSLOT]; VkCommandBufferSubmitInfo cbi[NSLOT][2]; VkSemaphoreSubmitInfo sig[NSLOT]; int n = 0; uint64_t last = 0;
+    slot_t *batch[NSLOT];
     for (int k = 0; k < g_norder; k++) {
         slot_t *s = &g_slot[g_order[k]];
         if (s->state != S_PENDING) continue;
@@ -74,18 +84,29 @@ static void flush_locked(void) {
         cbi[n][nc++] = (VkCommandBufferSubmitInfo){VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, NULL, s->main, 0};
         sig[n] = (VkSemaphoreSubmitInfo){VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, NULL, g_vk.tl, s->value, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0};
         si[n] = (VkSubmitInfo2){VK_STRUCTURE_TYPE_SUBMIT_INFO_2, NULL, 0, 0, NULL, (uint32_t)nc, cbi[n], 1, &sig[n]};
-        s->state = S_SUBMITTED; last = s->value; n++;
+        batch[n++] = s;
+        last = s->value;
     }
     if (!n) return;
     VTR0();
     AcquireSRWLockExclusive(&g_vk.qlock);
+    if (vtr0_) for (int k = 0; k < n; k++)
+        swr_trace_span("Vulkan commit to queue submit", batch[k]->trace_commit);
     VkResult r = vkQueueSubmit2(g_vk.q, (uint32_t)n, si, VK_NULL_HANDLE);
     ReleaseSRWLockExclusive(&g_vk.qlock);
     VTR1("vkQueueSubmit2");
-    if (vtr0_) for (int k = 0; k < g_norder; k++) if (g_slot[g_order[k]].state == S_SUBMITTED && !g_slot[g_order[k]].t_submit) g_slot[g_order[k]].t_submit = vtr0_;
-    if (r != VK_SUCCESS) { VKRED("vkQueueSubmit2 failed (%d) for %d submissions up to %llu", r, n, (unsigned long long)last); vk_lost("a submit", r); }
+    if (r != VK_SUCCESS) {
+        VKRED("vkQueueSubmit2 failed (%d) for %d submissions up to %llu", r, n, (unsigned long long)last);
+        vk_lost("a submit", r);
+        return;
+    }
+    for (int k = 0; k < n; k++) {
+        batch[k]->state = S_SUBMITTED;
+        batch[k]->t_submit = vtr0_;
+    }
     atomic_store(&g_vk.tl_submitted, last);
     atomic_fetch_add(&g_qsubs, 1);
+    if (g_completion_wake) WakeConditionVariable(&g_submit_cv);
 }
 void vks_flush(void) { AcquireSRWLockExclusive(&g_lk); flush_locked(); ReleaseSRWLockExclusive(&g_lk); }
 
@@ -108,7 +129,7 @@ static unsigned __stdcall completion_main(void *arg) {
     { const char *e = getenv("SWR_PROF_FOCUS"); if (e && !strcmp(e, "completion")) { extern volatile DWORD g_host_focus_tid; g_host_focus_tid = GetCurrentThreadId(); extern void plat_prof_add_focus_thread(HANDLE h); plat_prof_add_focus_thread(GetCurrentThread()); } }
 #endif
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
-    while (!atomic_load(&g_stop)) {
+    while (!atomic_load(&g_stop) && !atomic_load(&g_vk.lost)) {
         AcquireSRWLockExclusive(&g_lk);
         uint64_t want = 0, age_from = 0;
         for (int k = 0; k < g_norder; k++) {
@@ -116,12 +137,22 @@ static unsigned __stdcall completion_main(void *arg) {
             if (s->state == S_SUBMITTED && !want) want = s->value;
             if (s->state == S_PENDING && !age_from) age_from = s->t_commit;
         }
-        if (age_from && now_ns() - age_from > AGE_FLUSH_NS) flush_locked();
+        if (age_from && now_ns() - age_from > AGE_FLUSH_NS) {
+            flush_locked();
+            if (g_completion_wake && !want && g_norder && g_slot[g_order[0]].state == S_SUBMITTED)
+                want = g_slot[g_order[0]].value;
+        }
+        if (g_completion_wake && !want && !atomic_load(&g_stop))
+            SleepConditionVariableSRW(&g_submit_cv, &g_lk, 1, 0);
         ReleaseSRWLockExclusive(&g_lk);
-        if (!want) { vk_retire_poll(); Sleep(1); continue; }
+        if (!want) {
+            vk_retire_poll();
+            if (!g_completion_wake) Sleep(1);
+            continue;
+        }
         if (!vk_tl_wait(want, 1000000)) continue;
         uint64_t done = vk_tl_value();
-        for (;;) {   // apply in value order; effects run outside the lock (an event write can wake a guest thread that submits)
+        while (!atomic_load(&g_vk.lost)) {   // effects run outside the lock (an event write can wake a guest thread that submits)
             AcquireSRWLockExclusive(&g_lk);
             int idx = g_norder && g_slot[g_order[0]].state == S_SUBMITTED && g_slot[g_order[0]].value <= done ? g_order[0] : -1;
             ReleaseSRWLockExclusive(&g_lk);
@@ -129,8 +160,9 @@ static unsigned __stdcall completion_main(void *arg) {
             slot_t *s = &g_slot[idx];
             if (s->t_submit) swr_trace_span("submission from queue submit to completion seen", s->t_submit);
             { VTR0();
-              for (size_t i = 0; i < s->nposts; i++) post_run(&s->posts[i]);
+              for (size_t i = 0; i < s->posts.n && !atomic_load(&g_vk.lost); i++) post_run(&((post_t *)s->posts.v)[i]);
               VTR1("completion effects (write-backs, events)"); }
+            if (atomic_load(&g_vk.lost)) break;
             AcquireSRWLockExclusive(&g_lk);
             atomic_store(&g_vk.tl_done, s->value);
             s->state = S_FREE; memmove(g_order, g_order + 1, (size_t)(--g_norder) * sizeof *g_order);
@@ -144,6 +176,8 @@ static unsigned __stdcall completion_main(void *arg) {
 
 int vks_init(void) {
     const char *e = getenv("NXRT_VK_BATCH"); if (e && atoi(e) > 0) g_batch = atoi(e) < NSLOT / 2 ? atoi(e) : NSLOT / 2;
+    const char *wake = getenv("NXRT_VK_COMPLETION_WAKE");
+    g_completion_wake = wake && !strcmp(wake, "1");
     for (int i = 0; i < NSLOT; i++) slot_init(&g_slot[i]);
     atomic_store(&g_stop, 0);
     g_thread = (HANDLE)_beginthreadex(NULL, 0, completion_main, NULL, 0, NULL);
@@ -154,7 +188,7 @@ void vks_shutdown(void) {
     if (!g_thread) return;
     vks_finish();
     atomic_store(&g_stop, 1); WaitForSingleObject(g_thread, 5000); CloseHandle(g_thread); g_thread = NULL;
-    for (int i = 0; i < NSLOT; i++) { if (g_slot[i].pool) vkDestroyCommandPool(g_vk.dev, g_slot[i].pool, NULL); free(g_slot[i].posts); memset(&g_slot[i], 0, sizeof g_slot[i]); }
+    for (int i = 0; i < NSLOT; i++) { if (g_slot[i].pool) vkDestroyCommandPool(g_vk.dev, g_slot[i].pool, NULL); free(g_slot[i].posts.v); memset(&g_slot[i], 0, sizeof g_slot[i]); }
     g_norder = 0; g_cur = -1;
 }
 
@@ -188,15 +222,27 @@ uint64_t vks_oldest_recording(uint64_t *assigned) {
     return m;
 }
 
-static void post_add(post_t p) {
-    if (g_cur < 0) { VKRED("completion effect posted outside a submission (kind %d): applied now", p.kind); post_run(&p); return; }
-    slot_t *s = &g_slot[g_cur];
-    if (s->nposts == s->cap) { s->cap = s->cap ? s->cap * 2 : 16; s->posts = realloc(s->posts, s->cap * sizeof *s->posts); }
-    s->posts[s->nposts++] = p; atomic_fetch_add(&g_posted, 1);
+// No memory for a completion effect: the submission being recorded must not complete without it (a guest event, counter or write-back silently
+// lost while its fence value reads done). Nothing of it was committed yet, so ending the run here publishes no completion. VKLOG: VKRED may be spent
+static void post_fatal(const postq_t *q) {
+    VKLOG("[RED] no memory for a completion effect (%llu queued, room for %llu): ending the run rather than completing the submission without it", (unsigned long long)q->n, (unsigned long long)q->cap);
+    fflush(NULL); abort();
 }
+// reserved: the token of room set aside by vks_post_reserve (0: none; a token of another slot is not this slot's room: it posts as an ordinary
+// effect). Always 1: with no memory the run ends (post_fatal)
+static int post_add_(post_t p, uint64_t reserved) {
+    if (g_cur < 0) { VKRED("completion effect posted outside a submission (kind %d): applied now", p.kind); post_run(&p); return 1; }
+    slot_t *s = &g_slot[g_cur];
+    post_t *d = postq_push_must(&s->posts, reserved && reserved == s->take_seq, post_fatal);
+    *d = p; atomic_fetch_add(&g_posted, 1); return 1;
+}
+static void post_add(post_t p) { post_add_(p, 0); }
 void vks_post_event(volatile uint32_t *val, uint32_t mode, uint32_t v) { post_add((post_t){1, val, mode, v, 0, 0, NULL, NULL}); }
 void vks_post_counter(uint64_t addr, uint32_t type) { post_add((post_t){2, NULL, 0, 0, addr, type, NULL, NULL}); }
 void vks_post_fn(void (*fn)(void *), void *arg) { post_add((post_t){3, NULL, 0, 0, 0, 0, fn, arg}); }
+uint64_t vks_post_reserve(void) { return g_cur >= 0 && postq_reserve(&g_slot[g_cur].posts) ? g_slot[g_cur].take_seq : 0; }
+void vks_post_unreserve(uint64_t token) { if (token && g_cur >= 0 && g_slot[g_cur].take_seq == token) postq_unreserve(&g_slot[g_cur].posts); }
+int vks_post_fn_reserved(uint64_t token, void (*fn)(void *), void *arg) { return post_add_((post_t){3, NULL, 0, 0, 0, 0, fn, arg}, token); }
 
 // Commits slot i: ends its command buffers (a barrier ends the uploads), assigns the next timeline value, queues it in order. Caller holds g_lk
 static uint64_t commit_locked(int i) {
@@ -207,6 +253,7 @@ static uint64_t commit_locked(int i) {
     else { vkEndCommandBuffer(s->up); vkEndCommandBuffer(s->main); }
     s->value = atomic_fetch_add(&g_vk.tl_assigned, 1) + 1;
     s->t_commit = now_ns(); s->state = S_PENDING;
+    s->trace_commit = g_swr_trace_on ? swr_trace_ts() : 0;
     void vkm_committed(int owner, uint64_t value); vkm_committed(i, s->value);   // staging the slot used lives until this value
     g_order[g_norder++] = i;
     atomic_fetch_add(&g_subs, 1);
@@ -247,25 +294,28 @@ void vks_wait_report(void) {
     memset(g_ws, 0, sizeof g_ws); ReleaseSRWLockExclusive(&g_ws_lk);
 }
 int vks_wait(uint64_t fence, uint64_t timeout_ns) {
-    if (!fence || atomic_load(&g_vk.tl_done) >= fence) return 1;
+    if (!fence) return 1;
+    if (atomic_load(&g_vk.lost)) return 0;
+    if (atomic_load(&g_vk.tl_done) >= fence) return 1;
     if (atomic_load(&g_vk.tl_submitted) < fence) vks_flush();
-    if (!timeout_ns) return atomic_load(&g_vk.tl_done) >= fence;
+    if (!timeout_ns) return !atomic_load(&g_vk.lost) && atomic_load(&g_vk.tl_done) >= fence;
     uint64_t t0 = now_ns();
     AcquireSRWLockExclusive(&g_lk);
-    while (atomic_load(&g_vk.tl_done) < fence) {
+    while (atomic_load(&g_vk.tl_done) < fence && !atomic_load(&g_vk.lost)) {
         if (atomic_load(&g_vk.tl_submitted) < fence) flush_locked();   // committed by another thread after the look above: batched, nobody else would hand it over
         uint64_t el = now_ns() - t0;
         if (timeout_ns != UINT64_MAX && el >= timeout_ns) break;
-        { static uint64_t said; if (el > 8000000000ull && now_ns() - said > 8000000000ull) { said = now_ns(); uint64_t gv = 0; vkGetSemaphoreCounterValue(g_vk.dev, g_vk.tl, &gv);
+        { static uint64_t said; if (el > 8000000000ull && now_ns() - said > 8000000000ull) { said = now_ns(); uint64_t gv = vk_tl_value();
+            if (atomic_load(&g_vk.lost)) break;
             int pend = 0, st[8] = {0}; for (int k = 0; k < g_norder; k++) { pend += g_slot[g_order[k]].state == S_PENDING; if (k < 8) st[k] = g_slot[g_order[k]].state; }
             VKRED("a wait for fence %llu has lasted %.0f s: done %llu, submitted %llu, assigned %llu, the GPU's timeline %llu, recording slot %d, %d orders, %d pending, states %d %d %d %d", (unsigned long long)fence, el / 1e9, (unsigned long long)atomic_load(&g_vk.tl_done), (unsigned long long)atomic_load(&g_vk.tl_submitted), (unsigned long long)atomic_load(&g_vk.tl_assigned), (unsigned long long)gv, g_cur, g_norder, pend, st[0], st[1], st[2], st[3]);
-            if (el > 15000000000ull) vk_lost("a wait that never ends (checkpoints as they stand; the device is not reported lost)", VK_ERROR_DEVICE_LOST); } }
+            if (el > 15000000000ull) { static int snapshot; if (!snapshot) { snapshot = 1; vk_report_checkpoints(); } } } }
         DWORD ms = timeout_ns == UINT64_MAX ? 100 : (DWORD)((timeout_ns - el) / 1000000 + 1);
         SleepConditionVariableSRW(&g_cv, &g_lk, ms < 100 ? ms : 100, 0);
     }
     ReleaseSRWLockExclusive(&g_lk);
     { uint64_t w = now_ns() - t0; atomic_fetch_add(&g_t_gpuwait, w); if (w > 200000) wait_note(w); }
-    return atomic_load(&g_vk.tl_done) >= fence;
+    return !atomic_load(&g_vk.lost) && atomic_load(&g_vk.tl_done) >= fence;
 }
 void vks_finish(void) { vks_flush(); vks_wait(atomic_load(&g_vk.tl_assigned), UINT64_MAX); }
 

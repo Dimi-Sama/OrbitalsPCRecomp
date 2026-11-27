@@ -17,6 +17,7 @@ Inputs (downloaded, not in git; BUILDING.md):
   --generated           the C of a code generation (switchrecomp.py <game> --no-build ... : <outdir>/Orbitals_build)
 """
 import argparse
+import json
 import os
 from pathlib import Path
 import shutil
@@ -107,22 +108,33 @@ if settings.what == "runtime":
     sw.build_runtime("gcc", str(out / "Orbitals"), False, "x11", print)
     artifact = out / "Orbitals"
 else:
-    baseline = Path(settings.generated) if settings.generated else \
-        worktrees / "Claude-AudioPerf" / "build" / "orbitals-debug" / "recompile-nanfix" / "Orbitals_build"
+    if not settings.generated:
+        cli.error("--generated is required for code. Generate the current C with switchrecomp.py --no-build.")
+    baseline = Path(settings.generated).resolve()
+    try:
+        inputs = json.loads((baseline / "generation.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise SystemExit("Generate the current C and its identity with switchrecomp.py --no-build.")
+    if inputs.get("contract") != sw.module_build.runtime_contract():
+        raise SystemExit("This generated C was made for a different runtime contract. Regenerate it first.")
     generated = out / "Orbitals_build"
     generated.mkdir(exist_ok=True)
-    names = [*sorted(baseline.glob("code_*.c")), *sorted(p for p in baseline.glob("*.c") if not p.name.startswith("code_"))]
-    if len(names) < 500:
-        raise SystemExit(f"saved code generation is incomplete: {baseline}")
-    files = []
-    for source in names:
-        target = generated / source.name
-        if not target.exists() or target.stat().st_mtime < source.stat().st_mtime:
-            shutil.copy2(source, target)
-        files.append(str(target))
-    objs = sw.compile_all(files, "gcc", "2", str(generated), False, settings.jobs, lambda s: print(s, flush=True))
-    sw.link_module(objs, "gcc", str(out / "Orbitals_code.so"), False, print)
+    if not (baseline / "module.c").is_file() or not all((baseline / name).is_file() for name in inputs["units"]):
+        raise SystemExit(f"Saved code generation is incomplete: {baseline}")
+    files = [str(baseline / name) for name in inputs.pop("units")]
+    compiler = {"driver": "zig-cc", "version": subprocess.check_output([zig, "version"], text=True).strip(),
+                "target": "x86_64-linux-gnu.2.34", "driver_sha256": sw.module_build.file_hash(zig)}
+    inputs.update(options=sw.module_options("gcc", sw.DEFAULT_OPT, False, ()), compiler=compiler,
+                  compiler_environment=sw.module_compiler_environment("gcc", sw.DEFAULT_OPT, False, (), compiler))
+    inputs["options"]["cross_recipe"] = sw.module_build.source_hash(("tools/steamdeck/cross/build.py",))
+    files.append(sw.module_identity_file(str(generated), inputs))
+    objs = sw.compile_all(files, "gcc", sw.DEFAULT_OPT, str(generated), False, settings.jobs,
+                          lambda s: print(s, flush=True), compiler=compiler)
     artifact = out / "Orbitals_code.so"
+    sw.link_module(objs, "gcc", str(artifact), False, print)
+    sw.module_build.write_json(sw.module_build.manifest_path(artifact),
+                               {"schema": 1, "fingerprint": sw.module_build.digest(inputs), "inputs": inputs,
+                                "module_sha256": sw.module_build.file_hash(artifact)})
 
 header = artifact.open("rb").read(20)
 assert header[:6] == b"\x7fELF\x02\x01" and header[18:20] == b">\0", header

@@ -22,6 +22,20 @@ ISSUE_TYPES = ("Crash", "Graphics / Vulkan", "Audio", "Performance", "Controller
                "Netplay", "Installation", "Save / progress", "Other")
 REPORT_LIMIT = 24_000_000
 LOG_LIMIT = 1_048_576
+VK_STARTUP = re.compile(
+    rb"^(?:\[[ 0-9.]+\] )?\[vk\] (device:|subgroup size:|driver (?=[^\r\n]*: shared memory accesses )|"
+    rb"driver properties:|Vulkan startup options:|shader workarounds:|shader corpus needs:)[ \t]*([^\r\n]*)\r?\n",
+    re.MULTILINE,
+)
+VK_LOGS = ("Orbitals.log", "console.log")
+VK_STARTUP_FIELDS = 7
+VK_DETAILS = {
+    b"device:": "Vulkan device",
+    b"driver properties:": "Vulkan driver",
+    b"subgroup size:": "Vulkan subgroups",
+    b"Vulkan startup options:": "Vulkan options",
+}
+LOG_LINE_LIMIT = 4096
 
 
 def scrub(value, paths=()):
@@ -116,13 +130,41 @@ def gpu_info():
     return result if instance or result["devices"] else {}
 
 
+def vulkan_startup(stream, early, end):
+    """Keep the first GPU and shader configuration lines from the part a report would omit."""
+    seen = {match[1] for match in VK_STARTUP.finditer(early)}
+    if len(seen) == VK_STARTUP_FIELDS:
+        return b""
+    lines = []
+    start_of_line = early.endswith(b"\n")
+    while stream.tell() < end and len(seen) < VK_STARTUP_FIELDS:
+        line = stream.readline(LOG_LINE_LIMIT)
+        if not line:
+            break
+        complete = line.endswith(b"\n")
+        if start_of_line and complete:
+            match = VK_STARTUP.match(line)
+            if match and match[1] not in seen:
+                seen.add(match[1])
+                lines.append(line)
+        start_of_line = complete
+    return b"".join(lines)
+
+
 def read_log(root, name, paths):
     with read_local(root, Path(name)) as stream:
         size = os.fstat(stream.fileno()).st_size
         if size > LOG_LIMIT:
             early = stream.read(65_536)
-            stream.seek(-LOG_LIMIT + 65_536, os.SEEK_END)
-            contents = early + b"\n--- middle omitted: size limit ---\n" + stream.read(LOG_LIMIT - 65_536)
+            omitted = b"\n--- middle omitted: size limit ---\n"
+            tail = size - (LOG_LIMIT - len(early) - len(omitted))
+            if name in VK_LOGS:
+                startup = vulkan_startup(stream, early, tail)
+                if startup:
+                    omitted += b"--- Vulkan startup lines from omitted log ---\n" + startup
+            tail_length = LOG_LIMIT - len(early) - len(omitted)
+            stream.seek(size - tail_length)
+            contents = early + omitted + stream.read(tail_length)
         else:
             contents = stream.read(LOG_LIMIT)
     if b"\0" in contents:
@@ -189,7 +231,8 @@ def create_report(fields, include, profiles, game=None, run=None, *, selected_sa
     if include.get("settings"):
         source = profiles.settings
         files["config/settings.json"] = json_bytes({
-            key: source.get(key) for key in ("gfx_preset", "mode", "display", "size", "upscale", "vsync", "volume", "keyboard", "fps")
+            key: source.get(key) for key in ("gfx_preset", "mode", "display", "size", "upscale", "vsync", "volume", "keyboard", "fps",
+                                             "tv_resolution", "stretch_wide")
         })
     log_root = run or (game.root if game else None)
     if include.get("game_logs"):
@@ -240,6 +283,11 @@ def create_report(fields, include, profiles, game=None, run=None, *, selected_sa
         details["Recomp version"] = " ".join(filter(None, (runtime.get("release"), runtime.get("commit")))) or runtime["recomp_version"]
         if runtime.get("vulkan_device"):
             details["Vulkan device"] = runtime["vulkan_device"]
+    for name in VK_LOGS:
+        for match in VK_STARTUP.finditer(files.get("logs/" + name, b"")):
+            label = VK_DETAILS.get(match[1])
+            if label and match[2]:
+                details.setdefault(label, match[2].decode("utf-8"))
     if include.get("settings"):
         chosen = profiles.settings
         details["Settings"] = ", ".join(f"{key}={chosen.get(key)}" for key in ("gfx_preset", "mode", "fps", "size", "display", "vsync"))

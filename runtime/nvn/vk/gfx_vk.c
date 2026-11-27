@@ -107,8 +107,8 @@ void gfx_res_counts(uint32_t tick, const char *why) {
 // ---------- Submissions ----------
 static sync_t **g_syncs; static int g_nsync, g_csync;   // fences recorded by this submission: they get its value at the commit
 void gfx_prepare(void) { up(); }
-static unsigned long long g_sub_t0;   // SWR_TRACE: when this submission's replay began
-void gfx_sub_begin(void) { g_sub_t0 = g_swr_trace_on ? swr_trace_ts() : 0; up(); vks_begin(); g_nsync = 0; vkt_in_submission(); vkr_sub_begin(); }
+static unsigned long long g_sub_t0, g_fence_t0;   // SWR_TRACE: start of replay and first command buffer fence
+void gfx_sub_begin(void) { g_sub_t0 = g_swr_trace_on ? swr_trace_ts() : 0; g_fence_t0 = 0; up(); vks_begin(); g_nsync = 0; vkt_in_submission(); vkr_sub_begin(); }
 void gfx_queue_activate(uint64_t serial) { vkr_queue_activate(serial); }
 void gfx_queue_forget(uint64_t serial) { vkr_queue_forget(serial); }
 void gfx_sub_index(const uint64_t *h, int n) { (void)h; (void)n; }
@@ -123,6 +123,7 @@ void gfx_sub_copy(uint64_t src, uint64_t dst, uint64_t n) {
 void gfx_sub_fill(uint64_t dst, uint64_t n, uint32_t value) { vkr_fill(dst, n, value); }
 void vk_note_fence_sync(sync_t *s) {
     atomic_fetch_add(&s_fences, 1);
+    if (!g_nsync && g_swr_trace_on) g_fence_t0 = swr_trace_ts();
     if (g_nsync == g_csync) { g_csync = g_csync ? 2 * g_csync : 32; g_syncs = realloc(g_syncs, (size_t)g_csync * sizeof *g_syncs); }
     g_syncs[g_nsync++] = s;
 }
@@ -133,8 +134,9 @@ uint64_t gfx_sub_commit(void) {
     vkr_sub_end();
     if (g_sync_all && synced_frame != g_frame) { synced_frame = g_frame; vkm_sync_all(); }
     uint64_t v = vks_commit();
-    for (int i = 0; i < g_nsync; i++) { g_syncs[i]->fence = v; g_syncs[i]->fenced = 1; }
+    for (int i = 0; i < g_nsync; i++) nvn_sync_publish(g_syncs[i], 1, v);
     g_nsync = 0;
+    if (g_fence_t0) swr_trace_span("replay after first command buffer fence", g_fence_t0);
     if (g_sub_t0) swr_trace_span("replay of a submission", g_sub_t0);
     return v;
 }

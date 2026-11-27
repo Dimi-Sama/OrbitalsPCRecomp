@@ -57,6 +57,13 @@ typedef struct { uint32_t magic; samp_par p; } samp_t;                          
 typedef struct { uint32_t magic, nstage; NVNshaderData sd[6]; uint64_t serial; } prog_t;     FITS(prog_t, NVNprogram);   // serial: table key for the replay layer's resolved result
 
 typedef struct { uint32_t magic, fenced; uint64_t fence; } sync_t;   /* fenced 2: by WindowAcquireTexture */                           FITS(sync_t, NVNsync);
+// The replay thread publishes the timeline value before making the fence visible to waiters.
+static inline uint32_t nvn_sync_kind(const sync_t *s) { return __atomic_load_n(&s->fenced, __ATOMIC_ACQUIRE); }
+static inline uint64_t nvn_sync_value(const sync_t *s) { return __atomic_load_n(&s->fence, __ATOMIC_RELAXED); }
+static inline void nvn_sync_publish(sync_t *s, uint32_t kind, uint64_t value) {
+    __atomic_store_n(&s->fence, value, __ATOMIC_RELAXED);
+    __atomic_store_n(&s->fenced, kind, __ATOMIC_RELEASE);
+}
 typedef struct { const pool_t *pool; int64_t off; } ev_builder_t;                             FITS(ev_builder_t, NVNeventBuilder);
 typedef struct { uint32_t magic; volatile uint32_t *val; } ev_t;                              FITS(ev_t, NVNevent);
 

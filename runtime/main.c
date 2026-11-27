@@ -15,6 +15,7 @@
 const char* g_runtime_version=SWR_RUNTIME_VERSION;
 #include "rt.h"
 #include "audio.h"
+#include "orbitals_buttons.h"
 #include <stdatomic.h>
 #include <sys/stat.h>
 static int g_opt_null_trap;   /* null_trap= in the ini */
@@ -26,7 +27,9 @@ char g_datadir[1024], g_exename[256], g_exedir[1024];
 volatile int g_quit;
 int g_frames;
 int g_opt_diag=0;
+int g_display_w=0, g_display_h=0;
 int g_opt_docked=0, g_opt_lang=1, g_opt_res=1, g_opt_fps=1, g_opt_vsync=0, g_opt_drs=0;
+int g_opt_display_w=0, g_opt_display_h=0;
 float g_opt_resf=1.0f; int g_opt_shadows=1; int g_opt_cmp_low=1; int g_opt_shader_thread=1; int g_opt_drv_excl=-1; int g_opt_shader_proc=-1; u32 g_loop_limit=16384; int g_opt_resdyn=0; int g_opt_prof=0; float g_opt_resmin=0.6f;
 static char g_hints_path[1200];
 
@@ -187,7 +190,9 @@ static void rt_sev(void){}
 
 static void rt_wfe(CPU* c){ (void)c; plat_yield(); }
 
+/* SWR_MODULE_INTERFACE_BEGIN */
 RtAPI g_rtapi={swr_svc,rt_undef,rt_note_hint,rt_ticks,rt_brk,rt_fpcr,rt_sev,rt_wfe,19200000};
+/* SWR_MODULE_INTERFACE_END */
 
 /* ============================================================ system errors */
 void crash_report(void* host_pc, void* fault, int sig){
@@ -230,6 +235,18 @@ static const char* ini_get(const char* k, const char* def){ for(int i=0;i<g_ini_
 
 static void ini_apply(const char* k, const char* v){
     if(!strcmp(k,"docked")) g_opt_docked=atoi(v);
+    else if(!strncmp(k,"button_",7)) orbitals_buttons_ini(k,v);
+    else if(!strcmp(k,"display_resolution")){
+      char* end;
+      long height=strtol(v,&end,10);
+      g_opt_display_h= !*end && (height==1440 || height==1620 || height==1800 || height==2160)? (int)height : 0;
+      g_opt_display_w=g_opt_display_h*16/9;
+      if(!strcmp(v,"2560x1080")){ g_opt_display_w=2560; g_opt_display_h=1080; }
+      if(!strcmp(v,"3440x1440")){ g_opt_display_w=3440; g_opt_display_h=1440; }
+      if(!strcmp(v,"3840x1080")){ g_opt_display_w=3840; g_opt_display_h=1080; }
+      if(!strcmp(v,"5120x1440")){ g_opt_display_w=5120; g_opt_display_h=1440; }
+    }
+    else if(!strncmp(k,"gyro",4)){ extern void orbitals_input_ini(const char*, const char*); orbitals_input_ini(k,v); }
     else if(!strcmp(k,"language")) g_opt_lang=atoi(v);
     else if(!strcmp(k,"keyboard_text")){ extern char g_opt_swkbd[64]; snprintf(g_opt_swkbd,sizeof g_opt_swkbd,"%s",v); }
     else if(!strcmp(k,"log")) g_verbose=atoi(v);
@@ -306,16 +323,28 @@ typedef struct { const char* title; const IniOpt* o; } IniSec;
 
 static const IniOpt INI_DISPLAY[]={
   {"docked","0","1 = TV mode (1920x1080 / 1600x900 games), 0 = handheld mode (1280x720)"},
+  {"display_resolution","0","TV resolution: 0 = default, 1440 / 1620 / 1800 / 2160 = 16:9, 2560x1080 / 3440x1440 / 3840x1080 / 5120x1440 = experimental ultrawide"},
   {"fullscreen","1","1 = start in fullscreen (F11 or Alt+Enter toggles it in game)"},
   {"language","1","Game language: 0 Japanese, 1 English (US), 2 French, 3 German, 4 Italian, 5 Spanish,\n;   6 Chinese, 7 Korean, 8 Dutch, 9 Portuguese, 10 Russian, 11 Taiwanese, 12 English (UK),\n;   13 French (Canada), 14 Spanish (Latin America)"},
   {"keyboard_text","Player","What the on-screen keyboard answers when a game asks you to type something (names...)"},
   {NULL,NULL,NULL}};
 
 static const IniOpt INI_INPUT[]={
+  {"button_layout","nintendo","Orbitals prompts (restart required): nintendo, xbox, playstation"},
+  {"button_accept_bottom","0","With xbox/playstation: 1 = bottom accept, right back; jump stays on the bottom button"},
   {"mouse_right_stick","0","Mouse controls the right stick. F2 toggles mouse capture. IJKL also controls the right stick."},
   {"mouse_sensitivity","1.00","Mouse sensitivity: F1 10%..500% goes from 5x to 1250x speed, on a curve so 100% stays close to before"},
   {"mouse_invert","0","Mouse inversion: 0 = normal, 1 = horizontal, 2 = vertical, 3 = both"},
   {"keyboard_player","1","Keyboard and mouse: 1 = player 1, 2 = player 2 when player 1 has a gamepad"},
+  {"gyro","off","Orbitals gyro aiming (motion sensors of a DualSense or other SDL pad): off, always, aim = while the left trigger is held"},
+  {"gyro_sensitivity_x","1.5","Gyro horizontal sensitivity: camera degrees per degree the controller turns"},
+  {"gyro_sensitivity_y","1.5","Gyro vertical sensitivity: camera degrees per degree the controller tilts"},
+  {"gyro_button","touchpad","Gyro button: touchpad, mute, l3, r3, paddle_left, paddle_right or none"},
+  {"gyro_button_mode","pause","pause = the gyro stops while the button is held, toggle = each press turns it off / on.\n;   Holding the button 3 s with the controller lying still calibrates it (stored per controller model)"},
+  {"gyro_tightening","3","Gyro: slow turns under this many degrees per second are softened (hand shake), 0 = off"},
+  {"gyro_invert","0","Gyro inversion: 0 = normal, 1 = horizontal, 2 = vertical, 3 = both"},
+  {"gyro_calibrate","0","1 = calibrate the gyro the next time the controller lies still for 2 s, then store it (sets itself back to 0)"},
+  {"gyro_delivery","samples","samples = integrate sensor samples, latest = hold latest velocity on camera clock (50 ms expiry)"},
   {NULL,NULL,NULL}};
 
 static const IniOpt INI_GRAPHICS[]={
@@ -459,12 +488,26 @@ void vi_show_addr(u64 a, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt){
 
 /* ============================================================ code module */
 typedef const SwrModule* (*ModFn)(void);
+#ifndef SWR_CODE_CONTRACT
+#error Build the runtime with switchrecomp.py to generate its code contract
+#endif
+static const char runtime_contract[] __attribute__((used)) = "Orbitals runtime contract v1:" SWR_CODE_CONTRACT;
 #if !defined(_WIN32)
 __attribute__((weak)) const SwrModule* swr_module_static(void);
 #else
 const SwrModule* swr_module_static(void) __attribute__((weak));
 #endif
 int g_code_tcc;
+
+static void* g_code_dl;
+
+/* 1 when the code module was generated with guest calls to pc going through the dispatch table (codegen.py DYNAMIC_CALLS), so a
+   g_disp replacement for pc also sees the game's direct calls */
+int code_dynamic_call(u64 pc){
+  const u64* l= g_code_dl? (const u64*)plat_dl_sym(g_code_dl,"swr_dynamic_calls") : NULL;
+  for(;l && *l;l++) if(*l==pc) return 1;
+  return 0;
+}
 
 static int load_code(void){
   if(swr_module_static){ g_mod=swr_module_static(); return g_mod? 0 : -1; }
@@ -480,7 +523,13 @@ static int load_code(void){
     extern char* dlerror(void); WARN("dlopen: %s\n",dlerror());
 #endif
     WARN("Cannot find the recompiled code: %s\n",p); return -1; }
+  const char* contract=(const char*)plat_dl_sym(h,"swr_module_contract");
+  if(!contract || strcmp(contract,"Orbitals module contract v1:" SWR_CODE_CONTRACT)){
+    WARN("The recompiled code is incompatible with this runtime. Update or recompile the game.\n");
+    return -1;
+  }
   ModFn f=(ModFn)plat_dl_sym(h,"swr_module"); if(!f){ WARN("%s is not a SwitchRecomp module\n",p); return -1; }
+  g_code_dl=h;
 #if defined(_WIN32)
   { /* tell gcc builds from tcc builds by the PE linker version (ld 2.x vs tcc 6.0). tcc code is a lot slower */
     const u8* b=(const u8*)h; u32 lf; memcpy(&lf,b+0x3C,4); u8 mj=b[lf+24+2], mn=b[lf+24+3];
@@ -488,8 +537,9 @@ static int load_code(void){
     if(g_code_tcc) LOG("code: %s_code.dll was compiled with TCC. It runs several times slower than with GCC: recompile with GCC (SwitchRecomp, compiler GCC) for much better performance\n",g_exename);
     else LOG("code: %s_code.dll compiled with GCC (linker %u.%u)\n",g_exename,mj,mn); }
 #endif
-  g_mod=f(); return 0; }
+  g_mod=f(); return g_mod? 0 : -1; }
 
+/* SWR_MODULE_INTERFACE_BEGIN */
 static void build_dispatch(void){
   g_code_lo=g_mod->code_lo; g_code_hi=g_mod->code_hi;
   { extern u64 nvn_hook_reserve(u64); g_code_hi=nvn_hook_reserve(g_code_hi); }   /* synthetic NVN entry addresses after the code, see nvn_hook.c */
@@ -498,6 +548,7 @@ static void build_dispatch(void){
   for(u32 i=0;i<g_mod->nentries;i++){ u64 a=g_mod->entry_addr[i]; if(a>=g_code_lo && a<g_code_hi) g_disp[(a-g_code_lo)/4]=g_mod->entry_fn[i]; }
   swr_interp_entry=g_mod->interp;
 }
+/* SWR_MODULE_INTERFACE_END */
 
 void services_init(void){
   extern void svc_core_init(void), svc_hid_init(void), svc_fs_init(void), svc_vi_init(void), svc_pl_init(void);
@@ -525,6 +576,13 @@ int swr_main(int argc, char** argv){
     return 0;
   }
   split_path(argv[0]);
+  if(argc==2 && !strcmp(argv[1],"--check-code")){
+    if(load_code() || g_mod->abi!=SWR_MODULE_ABI){
+      fprintf(stderr,"Incompatible or missing recompiled code. Update or recompile the game.\n");
+      return 2;
+    }
+    return 0;
+  }
   char ini[1400];
   snprintf(ini,sizeof ini,"%s%s.ini",g_exedir,g_exename); ini_open(ini);
   for(int i=1;i<argc;i++){ if(!strcmp(argv[i],"-v")) g_verbose=2; else if(!strncmp(argv[i],"--",2) && strchr(argv[i],'=')){ char k[256]; snprintf(k,sizeof k,"%s",argv[i]+2); char* e=strchr(k,'='); if(!e) continue; *e=0; backend_ini(k,e+1); if(!strcmp(k,"docked")) g_opt_docked=atoi(e+1); if(!strcmp(k,"fps_limit")){ g_opt_fps=atoi(e+1); if(g_opt_fps!=30 && g_opt_fps<60 && g_opt_fps!=0) g_opt_fps=60; } } }
@@ -537,7 +595,7 @@ int swr_main(int argc, char** argv){
   LOG("SwitchRecomp - %s (runtime %s, built %s)\n",g_exename,SWR_RUNTIME_VERSION,__DATE__);
   LOG("release %s\n",SWR_RELEASE);
   if(load_code()) fatal("Could not load the game's recompiled code.");
-  if(g_mod->abi!=1) fatal("The recompiled code is from another SwitchRecomp version.");
+  if(g_mod->abi!=SWR_MODULE_ABI) fatal("The recompiled code is from another SwitchRecomp version.");
   LOG("code: %u recompiled entry points\n",g_mod->nentries);
   g_title_id=g_mod->title_id;
   if((g_title_id>>56)==0x04 && !getenv("SWR_TICK_19M2")){ g_tick_hz=31250000; g_rtapi.tick_hz=g_tick_hz; LOG("clock: Switch 2 system counter, 31.25 MHz\n"); }
@@ -555,7 +613,9 @@ int swr_main(int argc, char** argv){
     extern u64 g_sysres_size; char q[1200]; snprintf(q,sizeof q,"%sexefs/main.npdm",g_datadir); FILE* f=fopen(q,"rb");
     if(f){ u8 h[0x20]; if(fread(h,1,0x20,f)==0x20 && !memcmp(h,"META",4)){ u32 v; memcpy(&v,h+0x14,4); g_sysres_size=v; } fclose(f); }
     LOG("npdm: system resource %.1f MB\n",g_sysres_size/1048576.0); }
-  services_init(); romfs_init(); gpu_init();
+  services_init(); romfs_init();
+  for(u32 i=0;i<g_mod->nmods;i++) orbitals_buttons_install(&g_mod->mods[i]);
+  gpu_init();
   { extern void hle_install(void); hle_install(); }
   video_init(g_mod->title? g_mod->title : g_exename);
   { extern void plat_prof_start(int); if(g_opt_prof){ plat_prof_start(0); LOG("profile: active (profile.txt every 10 s)\n"); } }

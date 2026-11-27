@@ -35,6 +35,13 @@ Sean Barrett and contributors. Their licenses are retained in tool/audio_decode/
 Windows tool build libraries: SDL2, SDL2_image, SDL2_ttf (including FreeType and
 HarfBuzz); copyright/license notices are retained under tool/deps/.
 
+The launcher implements the NUP v1 format specified by a55uka (MIT, copyright
+2026 a55uka, https://github.com/a55uka/nup). SPIN0ZAi's MIT-licensed NUP Extractor
+(https://github.com/SPIN0ZAi/nup-extractor) was a second reference for the format.
+For Python 3.12 and 3.13, the launcher may download backports.zstd from PyPI.
+The verified wheel includes the Python Software Foundation and Zstandard license
+notices, which the launcher retains in its local dependency cache.
+
 Switch 2 graphics: the task/mesh pipeline emulation (runtime/gpu_gl.c mesh_run, the ISBE handling in sm86.c and
 shader.c) follows the stage buffer layout and register fields documented by the Eden Emulator Project and its
 Eglantine nx2 branch (GPL-3.0-or-later, https://git.eden-emu.dev/eden-emu/eden). Thanks to both projects. Several

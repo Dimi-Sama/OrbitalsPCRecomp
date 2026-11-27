@@ -22,6 +22,6 @@ int __isoc23_vfscanf(FILE* fp, const char* f, va_list a){ return vfscanf(fp,f,a)
 
 /* fmod and fmodf got a new symbol version in 2.38 too. fmodl did not, and long double holds any double or float
    exactly, so the remainder is the same */
-long double fmodl(long double, long double);
+__attribute__((visibility("default"))) long double fmodl(long double, long double);
 double fmod(double x, double y){ return (double)fmodl(x,y); }
 float fmodf(float x, float y){ return (float)fmodl(x,y); }

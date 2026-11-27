@@ -38,6 +38,9 @@ app="$work/OrbitalsPCRecomp.AppDir"; mkdir -p "$app/usr/kit" "$app/usr"
 tar xzf "$kit" -C "$app/usr/kit" --strip-components=1
 [[ -f "$app/usr/kit/launcher/__main__.py" && -f "$app/usr/kit/VERSION" ]] || { echo "not an Orbitals PC Recomp Linux kit: $kit" >&2; exit 1; }
 [[ "$(tr -d '\r\n' < "$app/usr/kit/VERSION")" == "$version" ]] || { echo "the kit is not version $version" >&2; exit 1; }
+if [[ -f "$app/usr/kit/recomplauncher.json" ]]; then
+  cp "$app/usr/kit/recomplauncher.json" "$app/recomplauncher.json"
+fi
 tar xzf "$cache/python.tar.gz" -C "$app/usr"   # -> usr/python
 "$app/usr/python/bin/python3" -c "import tkinter, sys; assert sys.version_info >= (3, 12)" 2>/dev/null \
   || echo "note: the bundled Python's Tk could not be checked here (no display or libX11): it is checked when the AppImage starts" >&2
@@ -64,16 +67,33 @@ set -u
 here="$(dirname "$(readlink -f "$0")")"
 version="$(tr -d '\r\n' < "$here/usr/kit/VERSION")"
 data="${XDG_DATA_HOME:-$HOME/.local/share}/OrbitalsPCRecomp"
-kit="$data/kit-$version"
+revision="$(sha256sum "$here/usr/kit/bin/runtime_linux_x11" | cut -c1-16)"
+if [[ -f "$here/usr/kit/COMMIT" ]]; then
+  revision="$(cut -c1-12 "$here/usr/kit/COMMIT")-$revision"
+fi
+kit="$data/kit-$version-$revision"
 say() {
   if command -v kdialog >/dev/null 2>&1; then kdialog --title "Orbitals PC Recomp" --error "$1"
   elif command -v zenity >/dev/null 2>&1; then zenity --error --title="Orbitals PC Recomp" --width=480 --text="$1"
   else echo "$1" >&2; fi
 }
-if [[ ! -f "$kit/.complete" ]]; then
-  mkdir -p "$data" && rm -rf "$kit.part" && cp -a "$here/usr/kit" "$kit.part" && rm -rf "$kit" && mv "$kit.part" "$kit" && touch "$kit/.complete" \
-    || { say "Orbitals PC Recomp could not copy its files to $kit (disk full or not writable?)."; exit 1; }
+if [[ "${RECOMPLAUNCHER:-}" == 1 && -w "$here/usr/kit" ]]; then
+  case "${1:-}" in
+    --prepare|--play) cd "$here/usr/kit" && exec "$here/usr/python/bin/python3" -B -m launcher "$@" ;;
+  esac
 fi
+if [[ ! -f "$kit/.complete" ]]; then
+  if ! (mkdir -p "$data" && stage="$(mktemp -d "$data/.kit-part.XXXXXXXX")" &&
+        trap 'rm -rf -- "$stage"' EXIT &&
+        cp -a "$here/usr/kit/." "$stage/" && touch "$stage/.complete" &&
+        { mv -T -- "$stage" "$kit" || [[ -f "$kit/.complete" ]]; }); then
+    say "Orbitals PC Recomp could not copy its files to $kit (disk full or not writable?)."
+    exit 1
+  fi
+fi
+case "${1:-}" in
+  --prepare|--play) cd "$kit" && exec "$here/usr/python/bin/python3" -B -m launcher "$@" ;;
+esac
 # The system's Python when it is 3.12+ with a Tk that draws scalable fonts (Xft): the bundled Tk (python-build-standalone) only has
 # X11 core fonts, readable but plain and without Japanese. The bundled Python otherwise, so no python3-tk is needed.
 py="$here/usr/python/bin/python3"

@@ -36,6 +36,7 @@ static struct {
     _Atomic int cap_want; int cap_ok, cap_w, cap_h; VkBuffer cap_buf; vk_alloc cap_mem; size_t cap_size; HANDLE cap_ev; uint32_t *cap_px;
     int upscale; float sharpness;   // presentation shader modes: standard (0), sharp (2), EASU (3)
     int upscale_logged;
+    int stretch_wide;
 } g_p;
 
 static uint64_t t0_ns;
@@ -363,6 +364,8 @@ static int present_one(const pq_item *it) {
     }
     if (it->flip && have) { float t = v0; v0 = v1; v1 = t; }   // GL's lower-left origin: the picture is stored bottom up
     float W = (float)g_p.ext.width, H = (float)g_p.ext.height, s = fminf(W / pw, H / ph), vw = floorf(pw * s + 0.5f), vh = floorf(ph * s + 0.5f);
+    int stretch = have && it->serial && g_p.stretch_wide && W * ph > H * pw;
+    if (stretch) { vw = W; vh = H; }
     VkViewport vp = {floorf((W - vw) / 2), floorf((H - vh) / 2), vw, vh, 0, 1};
     VkRect2D sc = {{(int32_t)vp.x, (int32_t)vp.y}, {(uint32_t)vw, (uint32_t)vh}};
     VkDescriptorImageInfo dii = {g_p.samp, have ? src.view : g_p.dummy_view, have ? src.layout : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -382,7 +385,7 @@ static int present_one(const pq_item *it) {
     vkCmdBindPipeline(f->cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_p.pipe);
     vkCmdSetViewport(f->cb, 0, 1, &vp); vkCmdSetScissor(f->cb, 0, 1, &sc);
     vkCmdBindDescriptorSets(f->cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_p.pl, 0, 1, &f->ds, 0, NULL);
-    float mode = !have ? 1.0f : s > 1.01f ? (float)g_p.upscale : 0.0f;
+    float mode = !have ? 1.0f : s > 1.01f && !stretch ? (float)g_p.upscale : 0.0f;
     if (mode == 3.0f && !g_p.upscale_logged) {
         g_p.upscale_logged = 1;
         VKLOG("present: FSR 1 EASU active, %.0fx%.0f -> %.0fx%.0f", pw, ph, vw, vh);
@@ -518,6 +521,7 @@ int vkp_init(int mode) {
     VkPushConstantRange pcr = {VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 48};
     const char *e = getenv("NXRT_VK_UPSCALE");
     g_p.upscale = e && !strcmp(e, "fsr1") ? 3 : e && !strcmp(e, "standard") ? 0 : 2;
+    e = getenv("NXRT_VK_STRETCH_WIDE"); g_p.stretch_wide = e && !strcmp(e, "1");
     e = getenv("NXRT_VK_SHARPNESS"); g_p.sharpness = e && *e ? (float)atof(e) : 0.5f;
     if (g_p.sharpness < 0) g_p.sharpness = 0; else if (g_p.sharpness > 1) g_p.sharpness = 1;
     VKLOG("present: upscaling to a window larger than the picture %s",

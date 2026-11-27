@@ -319,6 +319,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l){
     if(w==VK_F1){ show_controls(); return 0; }
     if(w==VK_F2){ g_mouse_mode=!g_mouse_mode; mouse_capture(); return 0; }
     if(w==VK_F3){ g_shot_req=1; return 0; }
+    if(w==VK_F6 && !(l&(1<<30))){ extern int swr_trace_request(void); if(swr_trace_request()) return 0; }
     if(w==VK_F7){ g_rec_toggle=1; return 0; }
     if(w==VK_F8){ extern volatile int g_shot8_req; g_shot8_req=1; return 0; }
     if(w==VK_F5){ extern void gpu_gl_dump_rts(void); extern void kernel_dump_threads(void); extern __thread FILE* g_log_redirect;
@@ -550,6 +551,15 @@ static void script_file_poll(void){
       (unsigned long long)g_script_base_ms,((plat_ns()-g_start)/1000000ull-g_script_base_ms)/1000.0);
 }
 
+static void gyro_poll_devices(const WinGamepad* devices, int allowed){
+  if(!orbitals_gyro_wanted()) return;
+  win_gamepads_motion_enable(1);
+  for(int i=0;i<WIN_GAMEPAD_SLOTS;i++){
+    PadMotion m[256]; int n=win_gamepads_motion(i,m,256);
+    orbitals_gyro_pad(i,devices[i].id,devices[i].vendor,devices[i].product,devices[i].sdl_buttons,
+                      devices[i].zl,m,n,devices[i].has_gyro==1,allowed);
+  }
+}
 void video_poll(void){
   if(g_script_file[0]) script_file_poll();
   int foreground=GetForegroundWindow()==g_hwnd && !g_controls_open;
@@ -579,6 +589,7 @@ void video_poll(void){
   }
   /* Observe held test buttons even when the panel is closed. Opening with a held button must not act on it again. */
   int panel_input=settings_controller(devices,scripted,foreground);
+  gyro_poll_devices(devices,focused && !panel_input);
   focused=focused && !panel_input;
   static u32 last_ids[WIN_GAMEPAD_SLOTS];
   for(int i=0;i<WIN_GAMEPAD_SLOTS;i++){

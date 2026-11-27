@@ -8,13 +8,25 @@ settings, unchanged.
 
 - **Internal 3D resolution**. TV renders at 1920×1080 (two 960×1080 views in co-op). Handheld renders at 1600×900
   (two 800×900 views). The Custom preset also offers 960×540, 1280×720 and 1600×900 with the TV profile. It writes
-  Unreal's `r.SecondaryScreenPercentage.GameViewport` to the session's `Engine.ini`. The HUD and final composite stay at 1920×1080.
+  Unreal's `r.SecondaryScreenPercentage.GameViewport` to the session's `Engine.ini`.
   [Unreal Engine documentation](https://dev.epicgames.com/documentation/en-us/unreal-engine/screen-percentage-with-temporal-upscale-in-unreal-engine)
 - **Unreal scalability groups** (`sg.*`): the game reads Unreal's user config layer `Orbitals/Saved/Config/Switch2/GameUserSettings.ini`
   from its RomFS; the runtime serves it from `<game>/Orbitals_data/romfs_overlay` (the launcher writes it in the session folder only).
   A scalability group is a *game setting*, which outranks the Switch 2 device profile's console variables.
-- **Window output size** sets the window's client area in physical pixels (540p to 4K in the preset list). Borderless uses the monitor's
-  desktop resolution. The runtime fits the 1080p composite to the output and can use bilinear, sharp or FSR 1 EASU when enlarging it.
+- **Aspect ratio** under **Settings → Graphics → Display** filters the **TV resolution** list by **16:9**, **21:9** or **32:9**.
+  Switching formats selects the closest available height. TV resolution sets the game's swap chain, HUD, text and final composite
+  in TV mode. Liftoff saves the resolution with the active profile and writes it to the session's `Orbitals.ini`.
+  For direct launches, `display_resolution` accepts `0` (1920×1080), `1440` (2560×1440), `1620` (2880×1620), `1800` (3200×1800),
+  `2160` (3840×2160), and the experimental widescreen modes `2560x1080`, `3440x1440`, `3840x1080` and `5120x1440`.
+  Use a matching **Window size** or **Borderless** on a monitor of the same format.
+  Some menus and videos retain their 16:9 framing in the native modes.
+  The runtime adjusts the game's `r.SetRes` parser on supported builds. The internal 3D resolution control still applies independently.
+  Recompile an older game module with this kit if it still shows 1920×1080 with a higher TV resolution selected. The recompiler
+  routes calls to the validated parser through the runtime so the option can take effect.
+- **Window output size** sets the window's client area in physical pixels. Borderless uses the monitor's
+  desktop resolution. The runtime fits the composite to the output and can use bilinear, sharp or FSR 1 EASU when enlarging it.
+- **Ultrawide stretch** is an experimental presentation option. It fills an output wider than the game picture by stretching the picture
+  horizontally with the standard filter. Leave **TV resolution** on a 16:9 choice to stretch the full game picture. For direct launches, set `NXRT_VK_STRETCH_WIDE=1`.
 
 ## What does not work (and is not offered)
 
@@ -23,7 +35,7 @@ settings, unchanged.
 | `r.ScreenPercentage`, `r.DynamicRes.Min/MaxScreenPercentage` in `Engine.ini` `[SystemSettings]` / `[ConsoleVariables]` / device profile | ignored: the Switch 2 device profile sets them at a higher priority, and the game sets its 3D size from code (laptop and Deck: views stay 960×1080 / 800×900) |
 | `sg.ResolutionQuality=50` (`GameUserSettings.ini`) | ignored: views stay 960×1080 (`sg-res50`) |
 | `-ExecCmds`, `-dpcvars` on the command line | ignored by the shipping build |
-| Native 1440p and 4K | The higher sizes are available for output. The game still composites at 1920×1080. |
+| Native 1440p or 4K via `r.SetRes` or `GameUserSettings.ini` | ignored: the platform code sets the TV resolution. Use `display_resolution` in `Orbitals.ini`. |
 | 120 FPS / unlimited | not offered: the 60 mode already presents every vblank; co-op stays below 60 on every PC tested, so a higher mode would only add risk |
 
 ## Unreal scalability groups (RTX 5070 Laptop, co-op, `ue_fps=60`, 200–245 s)

@@ -45,6 +45,16 @@ and runs them with SDL's dummy audio device. Pass when every line says `PASS` an
 `tests/VALIDATION.txt` has the expected output. Run it after any change to `runtime/audio.c`, `audio_*.h`,
 `rec_*.c/h` or `rec_audio_time.h`. Otherwise it's optional.
 
+For Vulkan writeback planning/ring/completion changes, also run:
+
+```sh
+gcc -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-sanitize-recover=all -Iruntime/nvn/vk tests/test_wb_core.c -o /tmp/orbitals-wb-core
+/tmp/orbitals-wb-core
+```
+
+Require `OK` with no sanitizer diagnostics. This models lifetime and failure paths;
+it does not replace GPU differential validation. See [writeback validation](docs/vulkan-writeback.md).
+
 ## Level 2: homebrew GPU test programs
 
 Small Switch homebrew programs, each drawing one thing the runtime has broken before, recompiled with SwitchRecomp

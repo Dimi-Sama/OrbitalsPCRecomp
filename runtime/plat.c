@@ -44,6 +44,7 @@ void fatal(const char* fmt, ...){
 #include <math.h>
 #include <process.h>
 #include <io.h>        /* _get_osfhandle */
+#include <wchar.h>
 void pm_init(PMutex* m){ InitializeSRWLock(&m->l); }
 
 void pm_lock(PMutex* m){ AcquireSRWLockExclusive(&m->l); }
@@ -167,23 +168,76 @@ void* plat_dl_open(const char* path){ return (void*)LoadLibraryA(path); }
 
 void* plat_dl_sym(void* h, const char* n){ return (void*)GetProcAddress((HMODULE)h,n); }
 
+#define WIN_FILE_PATH_CAP 4096
+
+/* Session directories can push individual RomFS files past MAX_PATH. Extended
+   paths let us open them independently of the machine's long-path policy. */
+static int win_file_path(const char* path, wchar_t out[WIN_FILE_PATH_CAP]){
+  wchar_t input[WIN_FILE_PATH_CAP];
+  if(!MultiByteToWideChar(CP_ACP,0,path,-1,input,WIN_FILE_PATH_CAP)) return 0;
+  for(wchar_t* p=input; *p; ++p) if(*p==L'/') *p=L'\\';
+  if(wcsncmp(input,L"\\\\?\\",4)==0 || wcsncmp(input,L"\\\\.\\",4)==0){ wcscpy(out,input); return 1; }
+  wchar_t* absolute=out+8;
+  DWORD length=GetFullPathNameW(input,WIN_FILE_PATH_CAP-8,absolute,NULL);
+  if(!length || length>=WIN_FILE_PATH_CAP-8) return 0;
+  if(length<MAX_PATH) memmove(out,absolute,(length+1)*sizeof(*out));
+  else if(wcsncmp(absolute,L"\\\\",2)==0){
+    memmove(out+8,absolute+2,(length-1)*sizeof(*out));
+    wmemcpy(out,L"\\\\?\\UNC\\",8);
+  } else {
+    memmove(out+4,absolute,(length+1)*sizeof(*out));
+    wmemcpy(out,L"\\\\?\\",4);
+  }
+  return 1;
+}
+
+FILE* plat_fopen(const char* path, const char* mode){
+  wchar_t wide[WIN_FILE_PATH_CAP], wmode[16];
+  if(!win_file_path(path,wide) || !MultiByteToWideChar(CP_ACP,0,mode,-1,wmode,16)) return NULL;
+  return _wfopen(wide,wmode);
+}
+
 int plat_mkdir(const char* p){ return CreateDirectoryA(p,NULL)? 0 : -1; }
 
-int plat_is_dir(const char* p){ DWORD a=GetFileAttributesA(p); return a!=INVALID_FILE_ATTRIBUTES && (a&FILE_ATTRIBUTE_DIRECTORY); }
+int plat_is_dir(const char* p){
+  wchar_t wide[WIN_FILE_PATH_CAP];
+  DWORD a=win_file_path(p,wide)? GetFileAttributesW(wide) : INVALID_FILE_ATTRIBUTES;
+  return a!=INVALID_FILE_ATTRIBUTES && (a&FILE_ATTRIBUTE_DIRECTORY);
+}
 
-int plat_dir_open(PDir* d, const char* path){ char p[1100]; snprintf(p,sizeof p,"%s\\*",path); WIN32_FIND_DATAA fd; HANDLE h=FindFirstFileA(p,&fd);
-  if(h==INVALID_HANDLE_VALUE) return -1; d->h=h; d->first=1; strncpy(d->name,fd.cFileName,511); d->is_dir=(fd.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)!=0;
-  d->size=((u64)fd.nFileSizeHigh<<32)|fd.nFileSizeLow; return 0; }
+static void win_dir_entry(PDir* d, const WIN32_FIND_DATAW* fd){
+  if(!WideCharToMultiByte(CP_ACP,0,fd->cFileName,-1,d->name,sizeof d->name,NULL,NULL)) d->name[0]=0;
+  d->is_dir=(fd->dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)!=0;
+  d->size=((u64)fd->nFileSizeHigh<<32)|fd->nFileSizeLow;
+}
+
+int plat_dir_open(PDir* d, const char* path){
+  char pattern[WIN_FILE_PATH_CAP];
+  int n=snprintf(pattern,sizeof pattern,"%s\\*",path);
+  wchar_t wide[WIN_FILE_PATH_CAP];
+  if(n<0 || (size_t)n>=sizeof pattern || !win_file_path(pattern,wide)) return -1;
+  WIN32_FIND_DATAW fd;
+  HANDLE h=FindFirstFileW(wide,&fd);
+  if(h==INVALID_HANDLE_VALUE) return -1;
+  d->h=h; d->first=1;
+  win_dir_entry(d,&fd);
+  return 0;
+}
 
 int plat_dir_next(PDir* d){
   for(;;){
     if(d->first){ d->first=0; }
-    else { WIN32_FIND_DATAA fd; if(!FindNextFileA((HANDLE)d->h,&fd)) return 0; strncpy(d->name,fd.cFileName,511); d->is_dir=(fd.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)!=0; d->size=((u64)fd.nFileSizeHigh<<32)|fd.nFileSizeLow; }
-    if(strcmp(d->name,".") && strcmp(d->name,"..")) return 1; } }
+    else { WIN32_FIND_DATAW fd; if(!FindNextFileW((HANDLE)d->h,&fd)) return 0; win_dir_entry(d,&fd); }
+    if(d->name[0] && strcmp(d->name,".") && strcmp(d->name,"..")) return 1; } }
 
 void plat_dir_close(PDir* d){ FindClose((HANDLE)d->h); }
 
-u64 plat_file_size(const char* p){ WIN32_FILE_ATTRIBUTE_DATA a; if(!GetFileAttributesExA(p,GetFileExInfoStandard,&a)) return 0; return ((u64)a.nFileSizeHigh<<32)|a.nFileSizeLow; }
+u64 plat_file_size(const char* p){
+  wchar_t wide[WIN_FILE_PATH_CAP];
+  WIN32_FILE_ATTRIBUTE_DATA a;
+  if(!win_file_path(p,wide) || !GetFileAttributesExW(wide,GetFileExInfoStandard,&a)) return 0;
+  return ((u64)a.nFileSizeHigh<<32)|a.nFileSizeLow;
+}
 
 int plat_pread(FILE* f, void* buf, u64 size, u64 off){
   HANDLE h=(HANDLE)_get_osfhandle(_fileno(f)); OVERLAPPED ov; memset(&ov,0,sizeof ov); ov.Offset=(DWORD)off; ov.OffsetHigh=(DWORD)(off>>32);

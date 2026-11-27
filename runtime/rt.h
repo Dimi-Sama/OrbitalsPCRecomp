@@ -66,6 +66,11 @@ typedef struct { void* h; int first; char name[512]; int is_dir; u64 size; } PDi
 
 int  plat_dir_open(PDir* d, const char* path); int plat_dir_next(PDir* d); void plat_dir_close(PDir* d);
 u64  plat_file_size(const char* path);
+#if defined(_WIN32)
+FILE* plat_fopen(const char* path, const char* mode);
+#else
+static inline FILE* plat_fopen(const char* path, const char* mode){ return fopen(path,mode); }
+#endif
 int  plat_pread(FILE* f, void* buf, u64 size, u64 off);
 void plat_install_crash_handler(void);
 /* crash guard for code that runs inside the video driver (shader compiles): a crash there jumps back to
@@ -300,18 +305,7 @@ SvcObj* svc_open(const char* name);
 void    services_init(void);
 
 /* ======================================================= game */
-typedef struct SwrModInfo { const char* name; u64 base, size; u8 build_id[32]; u32 text_off, text_size, ro_off, ro_size, data_off, data_size, bss_size; u32 is_nro; } SwrModInfo;
-
-typedef struct SwrModule {
-  u32 abi; u32 nmods; const SwrModInfo* mods;
-  u32 nentries; const u64* entry_addr; const GuestFn* entry_fn;
-  GuestFn interp;
-  u64 code_lo, code_hi;
-  const char* title; u64 title_id;
-  u32 main_stack, main_prio, main_core;
-  void (*init)(const RtAPI* rt);
-  u64 (*step)(CPU* c, u32 w, u64 pc);
-} SwrModule;
+#include "module_abi.h"
 
 extern const SwrModule* g_mod;
 extern GuestFn* g_disp;
@@ -352,6 +346,9 @@ extern int g_frames;
 extern volatile u64 g_gpu_submits;
 void ini_load(const char* path);
 extern int g_opt_docked, g_opt_lang, g_opt_res, g_opt_fps, g_opt_vsync;
+extern int g_opt_display_w, g_opt_display_h;
+extern int g_display_w, g_display_h;
+int code_dynamic_call(u64 pc); /* Generated module advertises dispatch-routed targets. */
 
 /* ======================================================= hid / vi / nv */
 void hid_update(void);

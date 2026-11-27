@@ -41,6 +41,58 @@ class LocalStateTest(unittest.TestCase):
         self.native = self.root / "build with spaces"
         self.data = build_fixture(self.native)
 
+    def test_move_reconnects_broken_links_without_touching_binaries(self):
+        copy = build_fixture(self.root / "original copy")
+        for name in ("exefs", "romfs"):
+            shutil.rmtree(self.data / name)
+            core.link_directory(self.data / name, copy / name)
+        moved_copy = copy.parent.with_name("moved copy")
+        copy.parent.rename(moved_copy)
+        moved = self.native.with_name("moved installation")
+        self.native.rename(moved)
+        module = moved / core.MODULE
+        native_code = b"compiled metadata" + b"n" * 32
+        module.write_bytes(native_code)
+        with self.assertRaisesRegex(core.LauncherError, "folder could not be found"):
+            core.installation(self.native)
+        with self.assertRaises(core.InstallationLinksMissing):
+            core.installation(moved)
+        wrong = build_fixture(self.root / "wrong copy", b"x")
+        with self.assertRaisesRegex(core.LauncherError, "does not match"):
+            core.repair_installation(moved, wrong)
+        repaired = core.repair_installation(moved, moved_copy / core.DATA)
+        self.assertEqual(repaired.exefs, moved_copy / core.DATA / "exefs")
+        self.assertEqual(repaired.romfs, moved_copy / core.DATA / "romfs")
+        self.assertEqual(module.read_bytes(), native_code)
+
+    def test_migration_copies_profile_saves_and_cache_then_survives_moving_kit(self):
+        kit = self.root / "kit"
+        game = kit / "game"
+        build_fixture(game)
+        self.profiles.update(install=str(game), source=str(self.data))
+        saves = self.profiles.saves / "user"
+        saves.mkdir()
+        (saves / "AutoSave").write_bytes(b"GVAS-test")
+        runs = self.profiles.directory / "runs"
+        runs.mkdir()
+        core.link_directory(runs / "old", self.data)
+        cache = self.profiles.root / "shader-cache"
+        cache.mkdir()
+        (cache / "compiled").write_bytes(b"shader")
+        destination = kit / "portable-data"
+        core.migrate_portable_data(self.profiles.root, destination, kit)
+        with self.assertRaisesRegex(core.LauncherError, "already exists"):
+            core.migrate_portable_data(self.profiles.root, destination, kit)
+        moved = kit.with_name("moved kit")
+        kit.rename(moved)
+        portable = core.Profiles(moved / "portable-data", kit=moved)
+        self.assertEqual(portable.location("install"), moved / "game")
+        self.assertEqual(portable.location("source"), self.data)
+        self.assertEqual((portable.saves / "user" / "AutoSave").read_bytes(), b"GVAS-test")
+        self.assertEqual((portable.root / "shader-cache" / "compiled").read_bytes(), b"shader")
+        self.assertFalse((portable.directory / "runs").exists())
+        self.assertTrue((saves / "AutoSave").is_file())
+
     def test_controller_scan_never_runs_an_older_runtime(self):
         game = core.installation(self.native)
         with patch.object(core, "REPO", self.root), patch.object(core.subprocess, "run") as run:
@@ -111,6 +163,9 @@ class LocalStateTest(unittest.TestCase):
         tools = self.native / "nxshader"
         tools.mkdir()
         (tools / "nxs_live.py").write_text("", encoding="utf-8")
+        (tools / "nxs_deps.py").write_text(
+            "import json\nprint(json.dumps({'phase': 'deps_ready', 'dotnet': 'dotnet', "
+            "'spirv_tools': '.', 'cxx': 'g++'}))\n", encoding="utf-8")
         (tools / "nxs_kraken.py").write_text(
             "import json, os, sys\nout = sys.argv[sys.argv.index('--out') + 1]\nos.makedirs(out, exist_ok=True)\n"
             "open(os.path.join(out, 'ooz_kraken.dll' if os.name == 'nt' else 'libooz_kraken.so'), 'wb').write(b'x')\n"
@@ -131,6 +186,19 @@ class LocalStateTest(unittest.TestCase):
         _, env = core.launch_options(game, run, self.root / "cache", self.profiles.settings)
         self.assertEqual(env["NXRT_VK_PIPELINE_SEED"], str(seed))
 
+    def test_writeback_comparison_switch_reaches_the_next_launch(self):
+        game = core.installation(self.native)
+        run = self.root / "run"
+        cache = self.root / "cache"
+        with patch.dict("os.environ", {"NXRT_VK_WB_GPU": "2"}):
+            _, env = core.launch_options(game, run, cache, self.profiles.settings)
+            self.assertEqual(env["NXRT_VK_WB_GPU"], "2")
+            for enabled in (False, True):
+                self.profiles.update_active(settings={"wb_gpu": enabled})
+                restored = core.Profiles(self.profiles.root).settings
+                _, env = core.launch_options(game, run, cache, restored)
+                self.assertEqual(env["NXRT_VK_WB_GPU"], str(int(enabled)))
+
     def test_shader_preparation_relays_progress_and_records_the_summary(self):
         self.fake_shader_tools(
             "import json, os, sys\nargs = sys.argv\ncache = args[args.index('--cache') + 1]\nos.makedirs(cache, exist_ok=True)\n"
@@ -142,7 +210,8 @@ class LocalStateTest(unittest.TestCase):
         self.assertIsNone(core.shader_preparation(game, self.profiles))
         events = []
         summary = core.prepare_shaders(game, self.profiles, on_progress=events.append)
-        self.assertEqual([e["phase"] for e in events], ["decoder", "translate", "done"])
+        phases = [] if core.WINDOWS else ["deps_ready"]
+        self.assertEqual([e["phase"] for e in events], phases + ["decoder", "translate", "done"])
         self.assertEqual(summary["validated"], 3)
         self.assertEqual(core.shader_preparation(game, self.profiles)["discovered"], 4)
         decoder = self.profiles.root / "tools" / "kraken"
@@ -155,16 +224,19 @@ class LocalStateTest(unittest.TestCase):
             core.prepare_shaders(game, self.profiles)
         self.assertIsNone(core.shader_preparation(game, self.profiles))
 
-    def test_diagnostics_log_the_3d_resolution_only_when_asked(self):
+    def test_diagnostics_pass_explicit_profiling_options_only_when_asked(self):
         game = core.installation(self.native)
         run = self.root / "run"
         run.mkdir()
-        with patch.dict(core.os.environ, {"NXRT_VK_LOG_RES": "1"}):
-            _, env = core.launch_options(game, run, self.root / "cache", self.profiles.settings)
-        self.assertNotIn("NXRT_VK_LOG_RES", env)
-        with patch.dict(core.os.environ, {"ORBITALS_DIAGNOSTICS": "1"}):
-            _, env = core.launch_options(game, run, self.root / "cache", self.profiles.settings)
-        self.assertEqual(env["NXRT_VK_LOG_RES"], "1")
+        options = {"NXRT_VK_LOG_RES": "1", "NXRT_VK_COMPLETION_WAKE": "1", "SWR_SYNC_TARGET_FENCE": "1"}
+        for trace, sync, replay in (("3000:30", "600:3000", "1"), ("hotkey:30", "600:trace", "0")):
+            config = options | {"SWR_TRACE_SYNC": sync, "SWR_TRACE": trace, "SWR_ASYNC_SUBMIT": replay}
+            with self.subTest(trace=trace), patch.dict(core.os.environ, config | {"ORBITALS_DIAGNOSTICS": "0"}):
+                _, env = core.launch_options(game, run, self.root / "cache", self.profiles.settings)
+                self.assertFalse(config.keys() & env.keys())
+            with self.subTest(trace=trace), patch.dict(core.os.environ, config | {"ORBITALS_DIAGNOSTICS": "1"}):
+                _, env = core.launch_options(game, run, self.root / "cache", self.profiles.settings)
+                self.assertEqual({key: env[key] for key in config}, config)
 
     def test_flight_recorder_is_off_for_players_unless_asked(self):
         game = core.installation(self.native)
@@ -175,6 +247,18 @@ class LocalStateTest(unittest.TestCase):
         with patch.dict(core.os.environ, {"NXRT_VK_FLIGHT": "1"}):
             _, env = core.launch_options(game, run, self.root / "cache", self.profiles.settings)
         self.assertEqual(env["NXRT_VK_FLIGHT"], "1")
+
+    def test_only_valid_graphics_test_overrides_are_forwarded(self):
+        game = core.installation(self.native)
+        flags = ("NXRT_VK_SHARED_VOLATILE", "NXRT_VK_SUBGROUP32", "NXRT_VK_SHADOW_LAZY",
+                 "NXRT_VK_WARP_SYNC", "NXRT_VK_NO_CONTRACT")
+        for value in ("0", "1", "", "bad"):
+            overrides = {name: value for name in flags}
+            with self.subTest(value=value), patch.dict(core.os.environ, overrides | {"NXRT_EXIT_AT_PRESENT": "1"}):
+                _, env = core.launch_options(game, self.root / "run", self.root / "cache", self.profiles.settings)
+                self.assertEqual({name: env[name] for name in flags if name in env},
+                                 overrides if value in ("0", "1") else {})
+                self.assertNotIn("NXRT_EXIT_AT_PRESENT", env)
 
     def test_shader_translator_finds_headers_through_session_link(self):
         link = self.root / "nxshader"
@@ -338,6 +422,102 @@ class LocalStateTest(unittest.TestCase):
             self.assertIn("fixture", (run / "console.log").read_text())
             self.assertFalse((run / core.EXE).exists())
 
+    def launched_ini(self, **settings):
+        """The session's Orbitals.ini of a launch with these profile settings (the game is a stand-in process)."""
+        self.profiles.update_active(settings=self.profiles.profile["settings"] | settings)
+        game = core.installation(self.native)
+        process, run = self.launch_stand_in(game)
+        process.wait(timeout=10)
+        return {line.partition("=")[0]: line.partition("=")[2] for line in (run / "Orbitals.ini").read_text().splitlines() if "=" in line}
+
+    def launch_stand_in(self, game):
+        popen = subprocess.Popen
+        with patch("launcher.core.subprocess.Popen", side_effect=lambda c, **k: popen([sys.executable, "-c", "pass"], **k)):
+            return core.launch(game, self.profiles)
+
+    CONTROL_KEYS = {"button_layout", "gyro", "gyro_sensitivity_x", "gyro_sensitivity_y", "gyro_button", "gyro_button_mode", "gyro_calibrate"}
+
+    def test_controls_defaults_leave_nintendo_and_gyro_off(self):
+        ini = self.launched_ini()
+        self.assertEqual({key: ini[key] for key in self.CONTROL_KEYS & set(ini)}, {})
+        self.assertNotIn("button_accept_bottom", ini)
+
+    def test_button_layout_xbox_and_playstation(self):
+        for layout, value in (("Xbox", "xbox"), ("PlayStation", "playstation")):
+            ini = self.launched_ini(button_layout=layout)
+            self.assertEqual(ini["button_layout"], value)
+            self.assertEqual(ini["button_accept_bottom"], "1")
+        ini = self.launched_ini(button_layout="Nintendo")
+        self.assertNotIn("button_layout", ini)
+        self.assertNotIn("button_accept_bottom", ini)
+
+    def test_retired_checkbox_does_not_override_layout(self):
+        for legacy in (True, False):
+            for layout in ("Xbox", "PlayStation"):
+                self.assertEqual(self.launched_ini(button_layout=layout, button_accept_bottom=legacy)["button_accept_bottom"], "1")
+            self.assertNotIn("button_accept_bottom", self.launched_ini(button_layout="Nintendo", button_accept_bottom=legacy))
+
+    def test_nintendo_clears_previous_game_ini_accept_override(self):
+        (self.native / "Orbitals.ini").write_text("button_layout=playstation\nbutton_accept_bottom=1\n")
+        ini = self.launched_ini(button_layout="Nintendo")
+        self.assertNotIn("button_layout", ini)
+        self.assertNotIn("button_accept_bottom", ini)
+
+    def test_gyro_always_writes_the_five_keys(self):
+        ini = self.launched_ini(gyro="Always", gyro_sensitivity_x=2.25, gyro_sensitivity_y=0.5, gyro_button="Right paddle",
+                                gyro_button_mode="Press to toggle")
+        self.assertEqual({key: ini[key] for key in self.CONTROL_KEYS - {"button_layout", "gyro_calibrate"}},
+                         {"gyro": "always", "gyro_sensitivity_x": "2.25", "gyro_sensitivity_y": "0.50", "gyro_button": "paddle_right",
+                          "gyro_button_mode": "toggle"})
+        self.assertNotIn("gyro_calibrate", ini)
+        self.assertEqual(self.launched_ini(gyro="While aiming (left trigger)")["gyro"], "aim")
+        defaults = self.launched_ini(gyro="Always", gyro_sensitivity_x=1.5, gyro_button="None")
+        self.assertEqual((defaults["gyro_sensitivity_x"], defaults["gyro_button"]), ("1.50", "none"))
+
+    def test_gyro_off_writes_no_gyro_key_even_when_set_up(self):
+        ini = self.launched_ini(gyro="Off", gyro_sensitivity_x=3.0, gyro_calibrate=True)
+        self.assertFalse({key for key in ini if key.startswith("gyro")})
+        self.assertTrue(self.profiles.settings["gyro_calibrate"])
+
+    def test_gyro_calibrate_is_written_once(self):
+        self.assertEqual(self.launched_ini(gyro="Always", gyro_calibrate=True)["gyro_calibrate"], "1")
+        self.assertFalse(self.profiles.settings["gyro_calibrate"])
+        self.assertEqual(core.Profiles(self.profiles.root).settings["gyro"], "Always")
+        self.assertNotIn("gyro_calibrate", self.launched_ini())
+
+    def test_calibration_save_failure_preserves_running_process(self):
+        self.profiles.update_active(settings={"gyro": "Always", "gyro_calibrate": True})
+        game = core.installation(self.native)
+        with patch.object(self.profiles, "update_active", side_effect=OSError("disk full")):
+            process, run = self.launch_stand_in(game)
+        process.wait(timeout=10)
+        self.assertTrue(self.profiles.settings["gyro_calibrate"])
+        self.assertIn("gyro_calibrate=1", (run / "Orbitals.ini").read_text())
+
+    def test_controls_settings_are_validated(self):
+        core.validate_settings(core.DEFAULT_SETTINGS | {"gyro_sensitivity_x": 4, "gyro_sensitivity_y": 0.5})
+        for key, value in (("button_layout", "Sega"), ("gyro", "Sometimes"), ("gyro_button", "Select"), ("gyro_button_mode", "Hold"),
+                           ("gyro_sensitivity_x", 0.25), ("gyro_sensitivity_y", 4.25), ("gyro_sensitivity_x", 1.6),
+                           ("gyro_sensitivity_x", "1.5"), ("gyro_sensitivity_y", True), ("gyro_calibrate", 1), ("gyro_calibrate", None)):
+            with self.subTest(key=key, value=value), self.assertRaises(core.LauncherError):
+                core.validate_settings(core.DEFAULT_SETTINGS | {key: value})
+
+    def test_old_control_keys_of_the_game_ini_are_replaced(self):
+        old = "".join(f"{key}=old\n" for key in self.CONTROL_KEYS) + "gyro_extra=keep\n"
+        (self.native / "Orbitals.ini").write_text(old)
+        ini = self.launched_ini()
+        self.assertEqual({key: ini[key] for key in self.CONTROL_KEYS & set(ini)}, {})
+        self.assertEqual(ini["gyro_extra"], "keep")
+        game = core.installation(self.native)
+        self.profiles.update_active(settings={"button_layout": "Xbox", "gyro": "Always"})
+        process, run = self.launch_stand_in(game)
+        process.wait(timeout=10)
+        text = (run / "Orbitals.ini").read_text()
+        for key, value in (("button_layout", "xbox"), ("gyro", "always"), ("gyro_button", "touchpad")):
+            self.assertEqual(text.count(f"\n{key}="), 1)
+            self.assertIn(f"\n{key}={value}\n", text)
+        self.assertNotIn("old", text)
+
     def test_os_process_error_keeps_active_saves(self):
         game = core.installation(self.native)
         original = subprocess.Popen
@@ -434,6 +614,51 @@ class ReportTest(unittest.TestCase):
             with self.assertRaisesRegex(core.LauncherError, "24 MB"):
                 reports.create_report({}, {"launcher_logs": True}, self.profiles)
 
+    def test_long_game_logs_keep_vulkan_startup_fields_and_the_tail(self):
+        run = self.root / "run"
+        run.mkdir()
+        graphics = (b"[   1.10] [vk] device: Fixture GPU\n"
+                    b"[   1.10] [vk] subgroup size: default 32 lanes, range 32 to 32\n"
+                    b"[   1.10] [vk] driver properties: radv (id 3), Mesa 26.0.0\n"
+                    b"[   1.10] [vk] driver Fixture (id 4): shared memory accesses volatile\n"
+                    b"[   1.10] [vk] shader workarounds: warp sync on, hull NoContraction off\n"
+                    b"[   1.10] [vk] Vulkan startup options: NXRT_VK_SUBGROUP32=0, NXRT_VK_SHARED_VOLATILE=1\n"
+                    b"[   1.10] [vk] shader corpus needs: subgroup ops (size 32)\n")
+        for name in ("Orbitals.log", "console.log"):
+            (run / name).write_bytes(b"first\n" + b"x" * 80_000 + b"\n" + graphics +
+                                     b"y\n" * reports.LOG_LIMIT + b"last\n")
+        report = reports.create_report({}, {"game_logs": True}, self.profiles, run=run)
+        for name in ("Orbitals.log", "console.log"):
+            exported = report.files["logs/" + name]
+            self.assertTrue(exported.startswith(b"first\n"))
+            self.assertTrue(exported.endswith(b"last\n"))
+            self.assertIn(graphics, exported)
+            self.assertLessEqual(len(exported), reports.LOG_LIMIT)
+        self.assertIn("**Vulkan driver** · radv (id 3), Mesa 26.0.0", report.issue)
+        self.assertIn("**Vulkan subgroups** · default 32 lanes", report.issue)
+        self.assertIn("**Vulkan options** · NXRT_VK_SUBGROUP32=0, NXRT_VK_SHARED_VOLATILE=1", report.issue)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+class OutputResolutionTest(unittest.TestCase):
+    setUp = LocalStateTest.setUp
+    launched_ini = LocalStateTest.launched_ini
+    launch_stand_in = LocalStateTest.launch_stand_in
+
+    def test_resolution_choices_replace_only_owned_ini(self):
+        from launcher import graphics
+        original = 'display_resolution=999\nunknown_future_setting=keep\n'
+        (self.native / 'Orbitals.ini').write_text(original)
+        for name, height in graphics.TV_RESOLUTIONS.items():
+            with self.subTest(name=name):
+                ini = self.launched_ini(tv_resolution=name)
+                self.assertEqual(ini.get('display_resolution'), str(height) if height else None)
+                self.assertEqual(ini['unknown_future_setting'], 'keep')
+                self.assertEqual((self.native / 'Orbitals.ini').read_text(), original)
+        for invalid in ('4K', 2160, None, '1080p'):
+            with self.subTest(invalid=invalid), self.assertRaises(core.LauncherError):
+                core.validate_settings(core.DEFAULT_SETTINGS | {'tv_resolution': invalid})
+        self.profiles.update_active(settings={})
+        self.assertEqual(self.profiles.settings['tv_resolution'], '1080p (console)')

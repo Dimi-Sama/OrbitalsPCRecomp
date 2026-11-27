@@ -3,6 +3,8 @@
 #include "vk_shader.h"
 #include "vk_json.h"
 #include "vk_hmap.h"
+#include "vk_spv_issue2.h"
+#include "vk_subgroups.h"
 #include "nxs_rt.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -1054,7 +1056,30 @@ vks_shader *vksh_make(const char *key, const uint8_t *spv, size_t spv_size, cons
         if (nq) { nw = qn; static _Atomic uint64_t nsh; uint64_t k2 = atomic_fetch_add(&nsh, 1) + 1;
             if (k2 <= 4 || !(k2 % 50)) VKLOG("shader %s: %d quad shuffle%s through quad operations (%llu shaders so far)", key, nq, nq > 1 ? "s" : "", (unsigned long long)k2); }
     }
-    if (g_vk.shared_volatile) {   // shared memory accesses made volatile (warp-synchronous code compiled for NVIDIA; vk_dev.c)
+    // Issue #2: synchronize the particle sort shaders identified by KingsmanZer0.
+    if (g_vk.warp_sync && s->stage == VKS_CS && vk_is_particle_sort_shader(key)) {
+        size_t sync_words = 0;
+        unsigned control, memory;
+        uint32_t *synced = vkspv_warp_sync(w, nw, &sync_words, &control, &memory);
+        if (synced) { free(w); w = synced; nw = sync_words; }
+        VKLOG("shader %s: warp sync added %u subgroup control and %u memory barriers", key, control, memory);
+    }
+    // Issues #2 and #15: preserve separate rounding in materials and world-space transforms.
+    if ((g_vk.no_contraction == VK_NO_CONTRACTION_GRAPHICS && (s->stage == VKS_VS || s->stage == VKS_FS)) ||
+        (g_vk.no_contraction == VK_NO_CONTRACTION_HULL && s->stage == VKS_FS && !strcmp(key, "e97d65cf4844ecdb"))) {
+        size_t precise_words = 0;
+        unsigned count;
+        uint32_t *precise = vkspv_no_contraction(w, nw, &precise_words, &count);
+        if (precise) { free(w); w = precise; nw = precise_words; }
+        if (count) {
+            static unsigned patched[2];
+            unsigned total = ++patched[s->stage == VKS_FS];
+            if (total <= 4 || !(total % 100))
+                VKLOG("shader %s: NoContraction added to %u operations (%u %s shaders patched)",
+                      key, count, total, s->stage == VKS_FS ? "fragment" : "vertex");
+        }
+    }
+    if (g_vk.shared_volatile) {   // shared memory accesses made volatile on drivers such as RADV (vk_dev.c)
         size_t vn = 0; int nv = 0; uint32_t *vw = vkspv_volatile_shared(w, nw, &vn, &nv);
         if (vw) { free(w); w = vw; nw = vn; static _Atomic uint64_t ns; uint64_t k2 = atomic_fetch_add(&ns, 1) + 1;
             if (k2 <= 8 || !(k2 % 50)) VKLOG("shader %s: %d shared memory accesses made volatile (%llu shaders so far)", key, nv, (unsigned long long)k2); }

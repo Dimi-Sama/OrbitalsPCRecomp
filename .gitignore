@@ -28,7 +28,9 @@ tools/linux-cross/cache/
 
 # games and their output
 games/
+/portable-data/
 captures/
+*.[nN][uU][pP]
 *_nvn/
 *.log
 *.ini
@@ -43,3 +45,5 @@ __pycache__/
 # the shader translator is shipped in the repository
 !tools/nxshader/xlate_bin/*.dll
 !tools/nxshader/xlate_bin/dmsh_xlate
+/issue11-local/
+/issue11-results/

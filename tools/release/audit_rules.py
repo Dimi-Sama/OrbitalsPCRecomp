@@ -7,7 +7,7 @@ import fnmatch, re
 
 # Game files, console dumps, keys, saves, caches derived from the game, logs
 FORBIDDEN_NAMES = [
-    ('*.nca', 'console content archive'), ('*.nsp', 'console package'), ('*.xci', 'cartridge image'), ('*.nup', 'console update package'),
+    ('*.nca', 'console content archive'), ('*.nsp', 'console package'), ('*.xci', 'cartridge image'), ('*.[nN][uU][pP]', 'console content archive'),
     ('*.nso', 'console executable'), ('*.nro', 'console executable'), ('*.npdm', 'console executable metadata'), ('main', 'console executable (ExeFS main)'),
     ('*.utoc', 'Unreal IoStore table (game data)'), ('*.ucas', 'Unreal IoStore container (game data)'), ('*.pak', 'Unreal package (game data)'),
     ('*.bk2', 'Bink video (game data)'), ('*.bnk', 'Wwise bank (game data)'), ('*.wem', 'Wwise audio (game data)'),

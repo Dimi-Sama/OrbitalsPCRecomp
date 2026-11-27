@@ -1,5 +1,6 @@
 /* Orbitals PC Recomp, based on SwitchRecomp by MZ Labs. AGPL-3.0, see LICENSE.txt and NOTICE.txt. */
 #include "rt.h"
+#include "orbitals_buttons.h"
 
 /* The validated main build reads its secondary screen percentage from a float returned by AsVariableFloat.
    The float is read on the game thread while preparing each viewport. Zero selects Unreal's original policy. */
@@ -29,6 +30,7 @@ static void orbitals_widget_activate(CPU* c,u64 pc){
      (*GP(widget+SETTINGS_ACTIVE)&1)) backend_game_settings_show();
 }
 
+/* SWR_MODULE_INTERFACE_BEGIN */
 static void orbitals_widget_install(const SwrModInfo* mod){
   u64 vtable=mod->base+SETTINGS_VTABLE;
   u64 slot=vtable+SETTINGS_ACTIVATE_SLOT*sizeof(u64);
@@ -44,7 +46,42 @@ static void orbitals_widget_install(const SwrModInfo* mod){
   *entry=orbitals_widget_activate;
   LOG("Orbitals: PC Settings bound to the CommonUI widget activation\n");
 }
+/* SWR_MODULE_INTERFACE_END */
 #endif
+
+/* The docked platform code sets r.SetRes to 1920x1080. Its sink parses that string
+   before resizing the viewport, so changing the result also resizes the HUD and composite. */
+enum { PARSE_RES=SWR_ORBITALS_PARSE_RES };
+static GuestFn parse_res_orig;
+
+static void orbitals_parse_res(CPU* c,u64 pc){
+  u64 px=c->x[1], py=c->x[2];
+  parse_res_orig(c,pc);
+  if(c->pc!=c->x[30] || !(c->x[0]&1) || !guest_span_writable(px,4,4) || !guest_span_writable(py,4,4)) return;
+  if(gr32(px)!=1920 || gr32(py)!=1080) return;
+  u32 w=(u32)g_opt_display_w, h=(u32)g_opt_display_h;
+  memcpy(GP(px),&w,sizeof w);
+  memcpy(GP(py),&h,sizeof h);
+  static unsigned reported;
+  if(!__atomic_exchange_n(&reported,1,__ATOMIC_RELAXED))
+    LOG("Orbitals: system resolution 1920x1080 -> %ux%u (display_resolution)\n",w,h);
+}
+
+/* SWR_MODULE_INTERFACE_BEGIN */
+static void orbitals_parse_res_install(const SwrModInfo* mod){
+  if(!g_opt_display_h || !g_opt_docked || PARSE_RES<mod->text_off ||
+     PARSE_RES-mod->text_off+8>mod->text_size) return;
+  u64 pc=mod->base+PARSE_RES;
+  if(pc<g_code_lo || pc>=g_code_hi || !guest_span_readable(pc,8,4)) return;
+  if(gr32(pc)!=SWR_ORBITALS_PARSE_RES_INSN1 || gr32(pc+4)!=SWR_ORBITALS_PARSE_RES_INSN2) return;
+  GuestFn* entry=&g_disp[(pc-g_code_lo)/4];
+  if(!*entry || *entry==orbitals_parse_res || !code_dynamic_call(pc)) return;
+  parse_res_orig=*entry;
+  *entry=orbitals_parse_res;
+  g_display_w=g_opt_display_w; g_display_h=g_opt_display_h;
+  LOG("Orbitals: TV resolution %dx%d bound to r.SetRes\n",g_opt_display_w,g_opt_display_h);
+}
+/* SWR_MODULE_INTERFACE_END */
 
 void orbitals_scene_init(void){
   for(u32 i=0;i<g_mod->nmods;i++){
@@ -53,6 +90,8 @@ void orbitals_scene_init(void){
 #ifdef _WIN32
     orbitals_widget_install(mod);
 #endif
+    orbitals_parse_res_install(mod);
+    { extern void orbitals_input_install(const SwrModInfo*); orbitals_input_install(mod); }
     if(mod->size<0x9c48a38 || mod->text_size<0x2ddc5c8) return;
     u64 load=mod->base+0x2ddc5bc;
     if(gr32(load)!=0x90037368 || gr32(load+4)!=0xf9451908 || gr32(load+8)!=0xbd400100) return;

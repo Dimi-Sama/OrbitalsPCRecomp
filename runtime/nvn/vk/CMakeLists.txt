@@ -35,7 +35,7 @@ target_compile_options(nxrt_bc7enc PRIVATE -w)
 
 add_library(nxrt_vk OBJECT
   gfx_vk.c vk_fn.c vk_dev.c vk_window.c vk_submit.c vk_defer.c vk_present.c vk_pcache.c vk_mem.c vk_fmt.c vk_tex.c vk_astc.cpp
-  vk_json.c vk_aftermath.c vk_shader.c vk_pipe.c vk_replay.c vk_shot.c ${_spv})
+  vk_json.c vk_aftermath.c vk_shader.c vk_spv_issue2.c vk_pipe.c vk_replay.c vk_shot.c ${_spv})
 target_include_directories(nxrt_vk PRIVATE ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR} "${NXRT_VULKAN_SDK}/Include" "${NXRT_SDL3_DIR}/include"
   ${CMAKE_CURRENT_SOURCE_DIR}/../gfx ${CMAKE_CURRENT_SOURCE_DIR}/../host ${CMAKE_CURRENT_SOURCE_DIR}/../front ${CMAKE_SOURCE_DIR}/src/s2tex)
 target_compile_definitions(nxrt_vk PRIVATE NXRT_GFX_VK VK_USE_PLATFORM_WIN32_KHR)
@@ -61,6 +61,12 @@ foreach(t device dirty tex astc pcache replay windows ballot)
   add_test(NAME nxrt.vk_${t} COMMAND nxrt-tests-vk-${t})
   set_tests_properties(nxrt.vk_${t} PROPERTIES SKIP_RETURN_CODE 77 ENVIRONMENT "NXRT_LOG_DIR=${CMAKE_BINARY_DIR}/nxrt-test-logs;NXRT_VK_CACHE_DIR=${CMAKE_BINARY_DIR}/vk-test-cache")
 endforeach()
+add_executable(nxrt-tests-vk-issue2 tests/t_vk_issue2.c vk_spv_issue2.c)
+target_include_directories(nxrt-tests-vk-issue2 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME nxrt.vk_issue2 COMMAND nxrt-tests-vk-issue2)
+add_executable(nxrt-tests-vk-subgroups tests/t_vk_subgroups.c)
+target_include_directories(nxrt-tests-vk-subgroups PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} "${NXRT_VULKAN_SDK}/Include")
+add_test(NAME nxrt.vk_subgroups COMMAND nxrt-tests-vk-subgroups)
 # The pool windows once more, side by side (no sparse aliasing): a range across a window edge is refused
 add_test(NAME nxrt.vk_windows_side COMMAND nxrt-tests-vk-windows)
 set_tests_properties(nxrt.vk_windows_side PROPERTIES SKIP_RETURN_CODE 77 ENVIRONMENT "NXRT_VK_NO_ALIAS=1;NXRT_LOG_DIR=${CMAKE_BINARY_DIR}/nxrt-test-logs;NXRT_VK_CACHE_DIR=${CMAKE_BINARY_DIR}/vk-test-cache")

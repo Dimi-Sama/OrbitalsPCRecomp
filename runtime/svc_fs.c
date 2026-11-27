@@ -4,6 +4,7 @@
 /* fs: RomFS (built on the fly from an extracted romfs/ folder, or a romfs.bin), plus save data and SD card mapped
    to normal folders */
 #include "rt.h"
+#include "orbitals_buttons.h"
 #include <ctype.h>
 
 #define FS_NOTFOUND RC(2,1)
@@ -45,11 +46,11 @@ static int cmpname(const void* a, const void* b){ return strcmp(*(char* const*)a
 char g_ue_extra_args[1024];
 static const char* ue_cmdline_host(const char* host, u64* size){
   static char out[1400];
-  FILE* f=fopen(host,"rb"); if(!f) return host;
+  FILE* f=plat_fopen(host,"rb"); if(!f) return host;
   char text[4096]; size_t n=fread(text,1,sizeof text-1-sizeof g_ue_extra_args-2,f); fclose(f); text[n]=0;
   while(n && (text[n-1]=='\r' || text[n-1]=='\n' || text[n-1]==' ')) text[--n]=0;
   snprintf(out,sizeof out,"%sUECommandLine.runtime.txt",g_exedir);
-  FILE* o=fopen(out,"wb"); if(!o) return host;
+  FILE* o=plat_fopen(out,"wb"); if(!o) return host;
   fprintf(o,"%s %s",text,g_ue_extra_args); fclose(o);
   *size=n+1+strlen(g_ue_extra_args);
   LOG("RomFS: UECommandLine.txt served with: %s %s\n",text,g_ue_extra_args);
@@ -82,7 +83,7 @@ static void scan(const char* host, int di){
    e.g. Unreal's user config layer Orbitals/Saved/Config/Switch2/Engine.ini that the game looks for and the RomFS lacks.
    the game's folder is not touched */
 static size_t g_overlay_len;
-static int overlay(const char* host, int di){
+static int overlay(const char* host, int di, int* has_layout_ini){
   PDir d; if(plat_dir_open(&d,host)) return 0;
   int added=0;
   while(plat_dir_next(&d)){
@@ -91,12 +92,14 @@ static int overlay(const char* host, int di){
       int c=dn[di].first_child, last=-1;
       while(c>=0 && strcmp(dn[c].name,d.name)){ last=c; c=dn[c].next_sib; }
       if(c<0){ c=add_dir(d.name,di); if(last<0) dn[di].first_child=c; else dn[last].next_sib=c; }
-      added+=overlay(p,c);
+      added+=overlay(p,c,has_layout_ini);
     } else {
       int f=dn[di].first_file, last=-1;
       while(f>=0 && strcmp(fn[f].name,d.name)){ last=f; f=fn[f].next_sib; }
       if(f>=0){ free(fn[f].host); fn[f].host=strdup(p); fn[f].size=d.size; }
       else { f=add_file(d.name,di,d.size,p); if(last<0) dn[di].first_file=f; else fn[last].next_sib=f; }
+      if(has_layout_ini && d.size && !strcmp(p+g_overlay_len,"/Orbitals/Saved/Config/Switch2/Game.ini"))
+        *has_layout_ini=1;
       LOG("RomFS overlay: %s (%llu bytes)\n",p+g_overlay_len,(unsigned long long)d.size); added++;
     }
   }
@@ -104,10 +107,10 @@ static int overlay(const char* host, int di){
   return added;
 }
 
-static void romfs_overlay(const char* path){
+static void romfs_overlay(const char* path, int* has_layout_ini){
   if(!path || !plat_is_dir(path)) return;
   g_overlay_len=strlen(path);
-  int n=overlay(path,0);
+  int n=overlay(path,0,has_layout_ini);
   LOG("RomFS: overlay %s, %d files\n",path,n);
 }
 
@@ -121,8 +124,11 @@ static void romfs_build(const char* dir){
   add_dir("",0); dn[0].parent=0; g_romdir_len=strlen(dir);
   scan(dir,0);
   { char o[1200]; snprintf(o,sizeof o,"%sromfs_overlay",g_datadir);
-    romfs_overlay(o); }
-  romfs_overlay(getenv("SWR_ROMFS_EXTRA_OVERLAY"));
+    romfs_overlay(o,NULL); }
+  romfs_overlay(getenv("SWR_ROMFS_EXTRA_OVERLAY"),NULL);
+  int layout_mounted=0;
+  romfs_overlay(orbitals_layout_overlay(),&layout_mounted);
+  orbitals_layout_overlay_mounted(layout_mounted);
   /* table offsets */
   u32 doff=0; for(int i=0;i<ndn;i++){ dn[i].off=doff; doff+=0x18+((strlen(dn[i].name)+3)&~3u); }
   u32 foff=0; for(int i=0;i<nfn;i++){ fn[i].off=foff; foff+=0x20+((strlen(fn[i].name)+3)&~3u); }
@@ -158,7 +164,7 @@ void romfs_init(void){
   pm_init(&g_romlock);
   char p[1200];
   if(g_romfs_dir_override[0] && plat_is_dir(g_romfs_dir_override)){ LOG("RomFS: %s\n",g_romfs_dir_override); romfs_build(g_romfs_dir_override); return; }
-  snprintf(p,sizeof p,"%sromfs.bin",g_datadir); rraw=fopen(p,"rb");
+  snprintf(p,sizeof p,"%sromfs.bin",g_datadir); rraw=plat_fopen(p,"rb");
   if(rraw){ rtotal=plat_file_size(p); LOG("RomFS: image %s (%.1f MB)\n",p,(double)rtotal/1048576.0); return; }
   snprintf(p,sizeof p,"%sromfs",g_datadir);
   if(plat_is_dir(p)){ LOG("RomFS: folder %s\n",p); romfs_build(p); return; }
@@ -185,7 +191,7 @@ static FILE* rf_open(const char* path){
   int lru=0;
   for(int i=0;i<NOPEN;i++){ if(openf[i].path==path){ openf[i].last=++openclk; return openf[i].f; } if(openf[i].last<openf[lru].last) lru=i; }
   if(openf[lru].f) fclose(openf[lru].f);
-  openf[lru].f=fopen(path,"rb"); openf[lru].path=path; openf[lru].last=++openclk; return openf[lru].f; }
+  openf[lru].f=plat_fopen(path,"rb"); openf[lru].path=path; openf[lru].last=++openclk; return openf[lru].f; }
 
 int romfs_read(u64 off, void* dst, u64 size){
   u8* d=dst;

@@ -11,6 +11,11 @@ The recompiled module, shader cache, pipeline cache and saves are generated loca
   instead of copied), a GPU with **Vulkan 1.3**.
 - Windows 10/11 x64, or Linux x86-64 (glibc 2.34+). Internet access for the build tools (see the table below), never for the game.
 
+In the v0.1.6 launcher, **INSTALL ORBITALS** accepts an extracted folder or a base-game NUP v1. The default destination is
+`games/Orbitals` in the kit. You can also select a new or empty destination whose parent is writable. Use a local NTFS volume
+on Windows so Liftoff can create directory junctions. NUP imports need space on the destination volume for the extracted game
+and the AOT build. The command-line setup below continues to accept the extracted folder.
+
 ## Windows: one command
 
 ```powershell
@@ -91,7 +96,7 @@ Make `build\steamdeck-game\Orbitals_data\{exefs,romfs}` junctions to your game d
 
 ### On Linux
 
-Extract the Linux x86-64 release archive and open `Orbitals-Launcher.sh`. **Install from my files** uses the included Linux runtime
+Extract the Linux x86-64 release archive and open `Orbitals-Launcher.sh`. **GAME FILES → INSTALL** uses the included Linux runtime
 and recompiles the game module with GCC. Keep your ExeFS and RomFS in place. The installation links to them by default.
 
 On Debian or Ubuntu with Python 3.12 or later, install the launcher, compiler and graphics dependencies using your distribution's packages.
@@ -123,7 +128,7 @@ Orbitals_nvn/cache/                                               the shader cac
 
 Then `bash tools/steamdeck/install-profile.sh <folder> steam_deck_720p30` writes the handheld profile, and `orbitals-deck.sh` starts the
 game (desktop mode, or Steam → Add a Non-Steam Game in game mode). Nothing outside the folder is changed; SteamOS stays read-only.
-`strip --strip-debug Orbitals_code.so` on the Deck brings the module from 1.1 GB to about 400 MB.
+Copy `Orbitals_code.build.json` alongside `Orbitals_code.so`. The fingerprint verifies the bytes of the module as built.
 
 **Shaders on the Deck:** the live translator needs Python 3, the .NET 10 runtime and SPIRV-Tools, which SteamOS does not have. Play the
 same scenes once on Windows and copy that game folder's `Orbitals_nvn/cache` to the Deck (it is made from your copy; do not share it).
@@ -138,3 +143,17 @@ python -B tools\release\make_public_tree.py --source HEAD --dry-run  # inspect t
 
 `REGRESSION.md` lists the runtime's own regression tests (`tests/`), and
 `tools/visual_suite` the capture comparison.
+
+## Compiled code identity
+
+The compiler writes `Orbitals_code.build.json` beside the module. Its fingerprint includes the generator and runtime
+interface sources, the ExeFS build IDs and contents, NPDM, deferred modules, generation options and hints, compiler
+identity, and compile and link options. Release packaging checks that the prebuilt runtime embeds the contract for the
+source tree being packaged. The runtime checks the module's exported contract before calling its dispatch entry point.
+
+The contract includes the shared declarations in `runtime/module_abi.h` and `runtime/cpu.h`, and the runtime blocks
+marked `SWR_MODULE_INTERFACE_BEGIN` and `SWR_MODULE_INTERFACE_END`. Bump `SWR_MODULE_ABI` for incompatible
+semantic changes outside those blocks and declarations. Add any
+new generator input to the fingerprint. The launcher keeps existing objects under `Orbitals_build/objects-v1`, keyed by
+the generated C, compiler, compiler flags and effective headers. Deleting that folder makes the next rebuild cold.
+Custom `SWR_CFLAGS` and native CPU tuning are recorded and use a cold object build.

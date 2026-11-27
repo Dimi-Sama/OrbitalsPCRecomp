@@ -9,10 +9,41 @@ codegen: analysis -> C.
   - output split into chunks so they compile in parallel
 """
 import array, bisect, sys
+from pathlib import Path
 import a64
 from a64 import lit, TABLE
 
 UNCOND = ('b', 'br', 'ret', 'brk')
+
+# The TV resolution option wraps this parser through the runtime dispatch table
+# (runtime/orbitals_settings.c). Calls to this entry must reach that table.
+# The NSO loader trims the trailing zero padding from build IDs.
+ORBITALS_MAIN_BUILD_ID = bytes.fromhex('0f8ef52cf4eee37628f366a539d5d6ad')
+_ABI_HEADER = (Path(__file__).with_name('runtime') / 'module_abi.h').read_text(encoding='ascii')
+_HOOK = {name: int(value, 16) for directive, name, value in
+         (line.split() for line in _ABI_HEADER.splitlines() if line.startswith('#define SWR_ORBITALS_'))}
+ORBITALS_RES_PARSER = _HOOK['SWR_ORBITALS_PARSE_RES']
+
+
+# Direct branches to these hooks must use the runtime dispatch table.
+DYNAMIC_CALLS = {ORBITALS_MAIN_BUILD_ID.hex(): (ORBITALS_RES_PARSER, 0x40c5020, 0x40c5ce0)}
+
+
+def dynamic_call_targets(mods):
+    targets = set()
+    for mod in mods:
+        if getattr(mod, 'name', None) != 'main':
+            continue
+        for entry in DYNAMIC_CALLS.get(bytes(mod.build_id).rstrip(b'\0').hex(), ()):
+            offset, size = mod.text
+            if not offset <= entry or entry + 4 > offset + size:
+                continue
+            if entry == ORBITALS_RES_PARSER and (entry + 8 > offset + size or (
+                    mod.word(entry), mod.word(entry + 4)) != (
+                        _HOOK['SWR_ORBITALS_PARSE_RES_INSN1'], _HOOK['SWR_ORBITALS_PARSE_RES_INSN2'])):
+                continue
+            targets.add(mod.base + entry)
+    return targets
 
 
 # ======================================================================= analysis
@@ -33,6 +64,7 @@ class Program:
     def __init__(self, mods, hints=()):
         self.mods = mods
         self.hints = set(hints)
+        self.dyn_calls = dynamic_call_targets(mods)
         self._lastm = None
         for m in mods:
             m._t0 = m.base + m.text[0]; m._t1 = m._t0 + m.text[1]
@@ -245,12 +277,14 @@ def emit_function(prog, f, funcs):
     if s and s[0] != f.start:
         out.append(' goto L_%X;' % f.start)
 
+    dyn = getattr(prog, 'dyn_calls', ())
+
     def tail(t):
-        if t in funcs: return '{ %s(c,%s); return; }' % (funcs[t].name, lit(t))
+        if t in funcs and t not in dyn: return '{ %s(c,%s); return; }' % (funcs[t].name, lit(t))
         return '{ CALLDYN(%s); return; }' % lit(t)
 
     def call(t):
-        if t in funcs: return '%s(c,%s);' % (funcs[t].name, lit(t))
+        if t in funcs and t not in dyn: return '%s(c,%s);' % (funcs[t].name, lit(t))
         return 'CALLDYN(%s);' % lit(t)
 
     for i, x in enumerate(s):

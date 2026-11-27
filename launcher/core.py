@@ -2,6 +2,7 @@
 
 """Local installations, save profiles, and native game processes."""
 
+import errno
 import hashlib
 import json
 import logging
@@ -13,16 +14,18 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from configparser import ConfigParser, Error as ConfigError
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from uuid import uuid4
 
-from . import VERSION, graphics
+from . import VERSION, graphics, nup, nup_codec
+from .tasks import Stopped, Task
 
 REPO = Path(__file__).resolve().parent.parent
 WINDOWS = os.name == "nt"
@@ -38,10 +41,19 @@ SAVE_NAMES = {"AutoSave", "OrbInputUserSettings", "ProfileSave", "SharedGameSett
 ISSUES_URL = "https://github.com/Dimi-Sama/OrbitalsPCRecomp/issues"
 DEFAULT_SETTINGS = {
     "mode": "Portable", "display": "Windowed", "size": "1280x720",
-    "upscale": "Standard", "vsync": True, "volume": 100, "keyboard": 1,
+    "upscale": "Standard", "stretch_wide": False, "vsync": True, "volume": 100, "keyboard": 1, "wb_gpu": None,
     "mouse_camera": None, "mouse_sensitivity": None, "vibration": True,
-    "fps": "30 (reference)", "gfx_preset": "High",
+    "fps": "30 (reference)", "gfx_preset": "High", "tv_resolution": "1080p (console)",
+    "button_layout": "Nintendo", "gyro": "Off", "gyro_sensitivity_x": 1.5, "gyro_sensitivity_y": 1.5,
+    "gyro_button": "Touchpad click", "gyro_button_mode": "Hold to pause", "gyro_calibrate": False,
 }
+# Orbitals.ini values of the controls settings; Nintendo is the game as it is.
+BUTTON_LAYOUTS = {"Nintendo": None, "Xbox": "xbox", "PlayStation": "playstation"}
+GYRO_MODES = {"Off": "off", "Always": "always", "While aiming (left trigger)": "aim"}
+GYRO_BUTTONS = {"Touchpad click": "touchpad", "Mute button": "mute", "Left paddle": "paddle_left", "Right paddle": "paddle_right",
+                "L3": "l3", "R3": "r3", "None": "none"}
+GYRO_BUTTON_MODES = {"Hold to pause": "pause", "Press to toggle": "toggle"}
+GYRO_SENSITIVITIES = tuple(step / 4 for step in range(2, 17))   # 0.5 to 4.0
 # setting values saved by the launcher's earlier French interface, read as today's
 LEGACY_VALUES = {"Fenêtré": "Windowed", "Sans bordure": "Borderless",
                  "30 (référence)": "30 (reference)", "60 (expérimental)": "60 (experimental)"}
@@ -60,6 +72,47 @@ def data_home():
     if WINDOWS:
         return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData/Local") / "OrbitalsLauncher"
     return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "orbitals-launcher"
+
+
+def portable_kit():
+    appimage = os.environ.get("ORBITALS_APPIMAGE")
+    kit = Path(appimage).resolve().parent if appimage else REPO
+    return kit if (kit / "portable.txt").is_file() else None
+
+
+def stored_path(path, kit):
+    path = Path(path).resolve()
+    return str(path.relative_to(kit) if kit and path.is_relative_to(kit) else path)
+
+
+def migrate_portable_data(source, destination, kit):
+    if os.path.lexists(destination):
+        raise LauncherError("The portable data folder already exists. Its contents were kept.")
+    with instance_lock(source), tempfile.TemporaryDirectory(prefix=".portable-", dir=destination.parent) as scratch:
+        stage = Path(scratch) / "data"
+        stage.mkdir()
+        with read_local(source, Path("launcher.json")) as file:
+            config = json.load(file)
+        for key in ("install", "source"):
+            if config.get(key) and Path(config[key]).is_absolute():
+                config[key] = stored_path(config[key], kit)
+        (stage / "launcher.json").write_bytes(json_bytes(config))
+
+        def ignore_runs_and_check(directory, names):
+            folder = Path(directory)
+            ignored = {"runs"} if folder.parent in (source / "profiles", source / "archived-profiles") else set()
+            for name in set(names) - ignored:
+                safe_entry(folder / name)
+            return ignored
+
+        for name in ("profiles", "archived-profiles", "shader-cache"):
+            folder = source / name
+            if os.path.lexists(folder):
+                safe_entry(folder)
+                shutil.copytree(folder, stage / name, ignore=ignore_runs_and_check)
+        if os.path.lexists(destination):
+            raise LauncherError("The portable data folder already exists. Its contents were kept.")
+        stage.rename(destination)
 
 
 @contextmanager
@@ -241,8 +294,20 @@ class Installation:
         return self.root / DATA / "save"
 
 
-def installation(root, *, template=False):
-    root = root.resolve(strict=True)
+class InstallationLinksMissing(LauncherError):
+    pass
+
+
+def installation_root(root):
+    try:
+        root = root.resolve(strict=True)
+    except (FileNotFoundError, NotADirectoryError) as error:
+        raise LauncherError("The installation folder could not be found. Select the folder where you moved Orbitals.") from error
+    if (root / ".orbitals-update.json").is_file() and any(not (root / name).is_file() for name in (EXE, MODULE)):
+        from . import code_update
+
+        with instance_lock(root / code_update.LOCK):
+            code_update.recover(root)
     for name in (EXE, MODULE):
         file = root / name
         if not file.is_file() or file.stat().st_size == 0:
@@ -251,12 +316,81 @@ def installation(root, *, template=False):
         header = file.read(4)
     if not (header.startswith(b"MZ") if WINDOWS else header == b"\x7fELF" and os.access(root / EXE, os.X_OK)):
         raise LauncherError("The executable does not match this platform or cannot be run.")
+    return root
+
+
+def installation(root, *, template=False):
+    root = installation_root(root)
+    required = ("exefs",) if template else ("exefs", "romfs")
+    missing = [name for name in required if not (root / DATA / name).is_dir()]
+    if missing:
+        raise InstallationLinksMissing("The ExeFS or RomFS folder could not be found. "
+                                       "Select this installation and reconnect the extracted game files.")
     exefs = (root / DATA / "exefs").resolve()
     romfs = (root / DATA / "romfs").resolve()
     ids = build_ids(exefs)
     if not template:
         validate_romfs(romfs)
     return Installation(root, exefs, romfs, ids, display_version(root / DATA))
+
+
+def repair_installation(root, source):
+    """Reconnect missing data to the existing compiled native module."""
+    root = installation_root(root)
+    source = source.resolve()
+    data = root / DATA
+    if os.path.lexists(data):
+        if not stat.S_ISDIR(safe_entry(data).st_mode):
+            raise LauncherError("Orbitals_data must be a local directory.")
+    targets = {name: (source / name).resolve() for name in ("exefs", "romfs")}
+    if any(path.is_relative_to(data) for path in targets.values()):
+        raise LauncherError("Select the extracted copy that contains the original ExeFS and RomFS folders.")
+    ids = build_ids(targets["exefs"])
+    validate_romfs(targets["romfs"])
+    with (root / MODULE).open("rb") as file, mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as module:
+        if any(module.find(bytes.fromhex(build_id)) < 0 for build_id in ids.values()):
+            raise LauncherError("The extracted ExeFS does not match this recompiled game. Select the original copy.")
+
+    missing = []
+    for name in targets:
+        path = data / name
+        if not path.is_dir():
+            if os.path.lexists(path) and not (path.is_symlink() or path.is_junction()):
+                raise LauncherError(f"{name} already contains a file. Choose a different installation folder.")
+            missing.append(name)
+    if "exefs" not in missing and build_ids(data / "exefs") != ids:
+        raise LauncherError("The selected game copy does not match the installation's ExeFS.")
+    if "romfs" not in missing:
+        validate_romfs(data / "romfs")
+    data.mkdir(exist_ok=True)
+    from . import code_update
+
+    with instance_lock(root / code_update.LOCK), instance_lock(data), \
+            tempfile.TemporaryDirectory(prefix=".reconnect-", dir=data) as work:
+        stage = Path(work)
+        for name in missing:
+            link_directory(stage / name, targets[name])
+        backed_up = []
+        added = []
+        try:
+            for name in missing:
+                path = data / name
+                if os.path.lexists(path):
+                    if not (path.is_symlink() or path.is_junction()) or path.is_dir():
+                        raise LauncherError(f"{name} changed while reconnecting the game. Select the installation again.")
+                    path.rename(stage / (name + ".old"))
+                    backed_up.append(name)
+                (stage / name).rename(path)
+                added.append(name)
+            game = installation(root)
+            code_update.assert_launchable(game)
+            return game
+        except (OSError, LauncherError):
+            for name in reversed(added):
+                (data / name).rename(stage / name)
+            for name in reversed(backed_up):
+                (stage / (name + ".old")).rename(data / name)
+            raise
 
 
 def detect_installation():
@@ -347,6 +481,11 @@ def prepare(source, template, installs, progress):
             shutil.copy2(binary, stage / binary.name)
             complete += binary.stat().st_size
             progress(complete, total)
+        from module_build import manifest_path
+
+        manifest = manifest_path(template.root / MODULE)
+        if manifest.is_file():
+            shutil.copy2(manifest, stage / manifest.name)
         ini = template.root / "Orbitals.ini"
         if ini.is_file():
             shutil.copy2(ini, stage / ini.name)
@@ -369,8 +508,9 @@ def prepare(source, template, installs, progress):
 
 
 class Profiles:
-    def __init__(self, root):
+    def __init__(self, root, *, kit=None):
         self.root = root
+        self.kit = kit
         (root / "profiles").mkdir(parents=True, exist_ok=True)
         self.path = root / "launcher.json"
         self.data = (json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists()
@@ -425,6 +565,13 @@ class Profiles:
 
     def update(self, **changes):
         self.commit(self.data | changes)
+
+    def location(self, key):
+        value = self.data.get(key)
+        if not value:
+            return None
+        path = Path(value)
+        return self.kit / path if self.kit and not path.is_absolute() else path
 
     def select(self, profile_id):
         if profile_id not in self.entries:
@@ -536,15 +683,16 @@ def link_directory(target, source):
 
 def shader_tools(game):
     for parent in (game.root, *list(game.root.parents)[:3], REPO):
-        for directory in (parent / "tools/nxshader", parent / "nxshader"):
+        for directory in (parent / "nxshader", parent / "tools/nxshader"):
             if (directory / "nxs_live.py").is_file():
                 return directory
     return None
 
 
-def session_directory(game, profiles):
+def session_directory(game, profiles, *, run=None):
     """Create a fresh executable layout that keeps the runtime's native saves profile-specific."""
-    run = profiles.directory / "runs" / timestamp()
+    if run is None:
+        run = profiles.directory / "runs" / timestamp()
     data = run / DATA
     data.mkdir(parents=True)
     try:
@@ -569,6 +717,11 @@ def session_directory(game, profiles):
         raise
 
 
+def gpu_writeback_mode(settings):
+    enabled = settings.get("wb_gpu")
+    return os.environ.get("NXRT_VK_WB_GPU", "1") if enabled is None else str(int(enabled))
+
+
 def launch_options(game, run, cache, settings):
     validate_settings(settings)
     args = [str(run / EXE), "--renderer=vulkan",
@@ -586,14 +739,31 @@ def launch_options(game, run, cache, settings):
     env.update(SWR_GPU="nvn", NXRT_GFX="vulkan", SWR_WINDOW_SIZE=settings["size"],
                NXRT_VK_PRESENT="fifo" if settings["vsync"] else "immediate",
                NXRT_VK_UPSCALE=settings["upscale"].lower(),
+               NXRT_VK_STRETCH_WIDE=str(int(settings["stretch_wide"])),
                SWR_AUDIO_VOLUME=str(settings["volume"]),
                NXRT_SHADER_CACHE=str(cache / "cache"), NXRT_VK_CACHE_DIR=str(cache / "vk"),
-               NXRT_VK_WB_GPU=os.environ.get("NXRT_VK_WB_GPU", "1"),   # write-backs compared on the GPU, as measured (STEAM_DECK_PERFORMANCE.md)
+               NXRT_VK_WB_GPU=gpu_writeback_mode(settings),
                # The flight recorder (the last 120 frames and every draw, for F5 / gamectl captures) is a development tool: ~440 MB of host memory
                # and a frame copy each present. Off for players; NXRT_VK_FLIGHT=1 in the environment keeps it
                NXRT_VK_FLIGHT=os.environ.get("NXRT_VK_FLIGHT", "0"))
     if os.environ.get("ORBITALS_DIAGNOSTICS") == "1":   # the 3D resolution the game draws at in the log (tools/release/bench_report.py)
         env["NXRT_VK_LOG_RES"] = "1"
+        for key, pattern in (("SWR_TRACE_SYNC", r"[0-9]+(?::(?:[0-9]+|trace))?"),
+                             ("SWR_TRACE", r"(?:[0-9]+|hotkey)(?::[0-9]+)?"),
+                             ("SWR_ASYNC_SUBMIT", r"[01]"),
+                             ("NXRT_VK_WB_BASE_DEVICE_FAIL", r"[0-9]+")):
+            value = os.environ.get(key, "")
+            if re.fullmatch(pattern, value):
+                env[key] = value
+        for key in ("NXRT_VK_COMPLETION_WAKE", "SWR_SYNC_TARGET_FENCE"):
+            if os.environ.get(key) == "1":
+                env[key] = "1"
+    # Keep explicit A/B overrides while filtering other runtime variables from launcher sessions.
+    for key in ("NXRT_VK_SHARED_VOLATILE", "NXRT_VK_SUBGROUP32", "NXRT_VK_SHADOW_LAZY",
+                "NXRT_VK_WARP_SYNC", "NXRT_VK_NO_CONTRACT", "NXRT_VK_WB_BASE_DEVICE"):
+        value = os.environ.get(key)
+        if value in ("0", "1"):
+            env[key] = value
     seed = pipeline_seed(game)
     if seed:
         env["NXRT_VK_PIPELINE_SEED"] = str(seed)   # pipelines built while the game boots, not at their first draw (tools/nxshader/pipeline_seeds)
@@ -613,7 +783,7 @@ def add_shader_toolchain(game, env):
     """The .NET runtime and SPIRV-Tools the shader translator uses (Windows: the installation's toolchain folder), into env."""
     if not WINDOWS:
         return env
-    for parent in (game.root.parent, REPO / "build/orbitals-debug"):
+    for parent in (game.root, game.root.parent, REPO / "build/orbitals-debug"):
         toolchain = parent / "toolchain"
         dotnet, vulkan = toolchain / "dotnet10", toolchain / "vulkan-bin"
         if dotnet.is_dir():
@@ -631,6 +801,7 @@ def add_shader_toolchain(game, env):
 # (tools/nxshader/nxs_prepare.py), so the first session does not stop to translate them. Vulkan pipelines are still built by the
 # driver when a draw first needs one (the runtime keeps them in its pipeline cache).
 SHADER_PREP_TIMEOUT = 4 * 3600
+SHADER_PUBLISH_GATE = "NXSHADER_PREP_PUBLISH_GATE"
 
 
 def pipeline_seed(game):
@@ -656,12 +827,24 @@ def shader_preparation(game, profiles):
     return info if isinstance(info, dict) and info.get("discovered") else None
 
 
-def linux_shader_deps(profiles, tools, env, on_progress=lambda event: None):
+def run_tool(task, args, timeout, env):
+    """subprocess.run with its output, under a task that can stop it and what it starts."""
+    with task.process(args, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL) as process:
+        try:
+            out, err = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            task.tree.end()
+            raise
+    task.check("The shader preparation was stopped.")
+    return subprocess.CompletedProcess(args, process.returncode, out, err)
+
+
+def linux_shader_deps(profiles, tools, env, on_progress=lambda event: None, task=None):
     """Linux (SteamOS included): the .NET runtime, SPIRV-Tools and a C++ compiler for the decoder in the launcher's private folder
     (tools/nxshader/nxs_deps.py: official downloads checked by digest, nothing installed on the system; kept for later runs, which are
     then offline). Returns env with them and the compiler path."""
-    result = subprocess.run([sys.executable, "-B", str(tools / "nxs_deps.py"), "--dest", str(profiles.root / "tools" / "shader-deps")],
-                            env=env, capture_output=True, text=True, timeout=3600)
+    result = run_tool(task or Task(), [sys.executable, "-B", str(tools / "nxs_deps.py"), "--dest", str(profiles.root / "tools" / "shader-deps")],
+                      3600, env)
     ready = None
     for line in result.stdout.splitlines():
         if line.startswith("{"):
@@ -679,7 +862,7 @@ def linux_shader_deps(profiles, tools, env, on_progress=lambda event: None):
     return env, ready["cxx"]
 
 
-def shader_decoder(profiles, tools, env, on_progress=lambda event: None, cxx=None):
+def shader_decoder(profiles, tools, env, on_progress=lambda event: None, cxx=None, task=None):
     """The Kraken decoder for the game's shader archives, built once on this PC from ooz's source (tools/nxshader/nxs_kraken.py)."""
     folder = profiles.root / "tools" / "kraken"
     library = folder / ("ooz_kraken.dll" if WINDOWS else "libooz_kraken.so")
@@ -691,8 +874,8 @@ def shader_decoder(profiles, tools, env, on_progress=lambda event: None, cxx=Non
             if (gcc / "x86_64-w64-mingw32-g++.exe").is_file():
                 env = dict(env, PATH=str(gcc) + os.pathsep + env.get("PATH", ""))
                 break
-    result = subprocess.run([sys.executable, "-B", str(tools / "nxs_kraken.py"), "--out", str(folder), *(["--cxx", str(cxx)] if cxx else [])],
-                            env=env, capture_output=True, text=True, timeout=600)
+    result = run_tool(task or Task(), [sys.executable, "-B", str(tools / "nxs_kraken.py"), "--out", str(folder),
+                                       *(["--cxx", str(cxx)] if cxx else [])], 600, env)
     lines = [line for line in result.stdout.splitlines() if line.startswith("{")]
     event = json.loads(lines[-1]) if lines else {}
     if result.returncode or event.get("phase") != "built" or not library.is_file():
@@ -701,16 +884,34 @@ def shader_decoder(profiles, tools, env, on_progress=lambda event: None, cxx=Non
     return library
 
 
-def prepare_shaders(game, profiles, on_progress=lambda event: None):
-    """Translate every shader of this build's game files into its shader cache. Returns the final summary (nxs_prepare.py "done")."""
+PREPARE_TOOLS = ("nxs_prepare.py", "nxs_kraken.py")   # Prepare shaders came with v0.1.5: an installation made by an older kit has neither
+
+
+def shader_stop_available(game):
+    tools = shader_tools(game)
+    try:
+        return tools is not None and SHADER_PUBLISH_GATE in (tools / "nxs_prepare.py").read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return False
+
+
+def prepare_shaders(game, profiles, on_progress=lambda event: None, task=None):
+    """Translate every shader of this build's game files into its shader cache. Returns the final summary (nxs_prepare.py "done").
+    Stopping `task` keeps what is translated: nxs_prepare.py does the rest the next time."""
+    task = task or Task()
     tools = shader_tools(game)
     if tools is None:
         raise LauncherError("The shader translator (nxshader) is missing from this installation.")
+    if not all((tools / name).is_file() for name in PREPARE_TOOLS):
+        old = game_release(game)
+        raise LauncherError(f"This installation was made by {'version ' + old if old else 'an older version'}, which cannot prepare "
+                            "shaders. Choose UPDATE THE GAME on the title screen first: it recompiles the game with this version and "
+                            "keeps your saves. Then prepare the shaders.")
     env = add_shader_toolchain(game, {key: value for key, value in os.environ.items() if not key.startswith(("SWR_", "NXRT_"))})
     cxx = None
     if not WINDOWS:
-        env, cxx = linux_shader_deps(profiles, tools, env, on_progress)
-    decoder = shader_decoder(profiles, tools, env, on_progress, cxx)
+        env, cxx = linux_shader_deps(profiles, tools, env, on_progress, task)
+    decoder = shader_decoder(profiles, tools, env, on_progress, cxx, task)
     dotnet = Path(env["DOTNET_ROOT"]) / ("dotnet.exe" if WINDOWS else "dotnet") if env.get("DOTNET_ROOT") else Path("dotnet")
     cache = shader_cache_root(game, profiles)
     cache.mkdir(parents=True, exist_ok=True)
@@ -718,23 +919,50 @@ def prepare_shaders(game, profiles, on_progress=lambda event: None):
             "--work", str(profiles.root / "shader-prep" / game.ids["main"]), "--decoder", str(decoder), "--dotnet", str(dotnet)]
     LOG.info("event=shader_preparation_started")
     last = {}
-    started = time.monotonic()
-    with subprocess.Popen(args, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL,
-                          creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0) as process:   # the launcher has no console: no window per tool
-        for line in process.stdout:
-            if not line.startswith("{"):
-                continue
+    stopped = "The shader preparation was stopped. Completed shader translations are kept for the next run."
+    timed_out = threading.Event()
+    with tempfile.TemporaryDirectory(prefix="shader-prep-", dir=cache) as working, tempfile.TemporaryFile() as stderr:
+        gate = Path(working) / "publish"
+        env[SHADER_PUBLISH_GATE] = str(gate)
+        with task.process(args, env=env, stdout=subprocess.PIPE, stderr=stderr, text=True, stdin=subprocess.DEVNULL) as process:
+            tree = task.tree
+
+            def timeout():
+                timed_out.set()
+                tree.end()
+
+            timer = threading.Timer(SHADER_PREP_TIMEOUT, timeout)
+            timer.daemon = True
+            timer.start()
             try:
-                event = json.loads(line)
-            except ValueError:
-                continue
-            last = event
-            on_progress(event)
-            if time.monotonic() - started > SHADER_PREP_TIMEOUT:
-                process.kill()
-                break
-        error = process.stderr.read()
-    if last.get("phase") != "done":
+                for line in process.stdout:
+                    if not line.startswith("{"):
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except ValueError:
+                        continue
+                    last = event
+                    if event.get("phase") == "publish_wait":
+                        timer.cancel()
+                        timer.join()
+                        if timed_out.is_set():
+                            break
+                        task.finish_without_stop(stopped)
+                        gate.touch()
+                    on_progress(event)
+                code = process.wait()
+            finally:
+                timer.cancel()
+                timer.join()
+        stderr.seek(max(0, stderr.seek(0, os.SEEK_END) - 1024))
+        error = stderr.read().decode("utf-8", errors="replace")
+    if timed_out.is_set():
+        raise LauncherError("Shader preparation timed out. Start it again to reuse completed work.")
+    if last.get("phase") != "done" or code not in (0, 2):
+        if task.stopped:
+            LOG.info("event=shader_preparation_stopped")
+            raise Stopped(stopped)
         LOG.error("event=shader_preparation_failed phase=%s", last.get("phase"))
         raise LauncherError("Shader preparation stopped: " + str(last.get("error") or error.strip()[-300:] or last.get("phase")))
     LOG.info("event=shader_preparation_done discovered=%s translated=%s cached=%s failed=%s seconds=%s", last.get("discovered"),
@@ -750,13 +978,21 @@ def validate_settings(settings):
         raise LauncherError("Enter a valid window size, for example 1280x720.")
     if (settings["mode"] not in graphics.RENDER_MODES or settings["display"] not in {"Windowed", "Borderless"}
             or settings["upscale"] not in {"Standard", "Sharp", "FSR1"}
+            or not isinstance(settings["stretch_wide"], bool)
             or settings["keyboard"] not in (1, 2) or not 0 <= settings["volume"] <= 100
             or not isinstance(settings["vsync"], bool)
+            or settings.get("wb_gpu") is not None and type(settings["wb_gpu"]) is not bool
             or not isinstance(settings["vibration"], bool)
             or settings["mouse_camera"] is not None and type(settings["mouse_camera"]) is not bool
             or settings["mouse_sensitivity"] is not None and (
                 type(settings["mouse_sensitivity"]) is not int or not 10 <= settings["mouse_sensitivity"] <= 500)
-            or settings["fps"] not in graphics.FPS_MODES):
+            or settings["tv_resolution"] not in graphics.TV_RESOLUTIONS
+            or settings["fps"] not in graphics.FPS_MODES
+            or settings["button_layout"] not in BUTTON_LAYOUTS or settings["gyro"] not in GYRO_MODES
+            or settings["gyro_button"] not in GYRO_BUTTONS or settings["gyro_button_mode"] not in GYRO_BUTTON_MODES
+            or any(type(settings[key]) not in (int, float) or settings[key] not in GYRO_SENSITIVITIES
+                   for key in ("gyro_sensitivity_x", "gyro_sensitivity_y"))
+            or type(settings["gyro_calibrate"]) is not bool):
         raise LauncherError("A profile setting is invalid.")
     try:
         graphics.validate(graphics_settings(settings))
@@ -770,6 +1006,8 @@ def validate_settings(settings):
 # unpacked beside this kit (download_update); the player's game is then recompiled by the new kit (outdated_release).
 UPDATE_REPOSITORY = "Dimi-Sama/OrbitalsPCRecomp"
 RELEASES_URL = f"https://github.com/{UPDATE_REPOSITORY}/releases"
+MANAGED = os.environ.get("RECOMPLAUNCHER") == "1"
+MANAGED_TEXT = "Check for updates in the launcher that installed this copy."
 
 
 def version_tuple(text):
@@ -786,6 +1024,8 @@ def version_tuple(text):
 def check_update(current=VERSION, repository=None, opener=None):
     """{"latest", "url", "newer", "notes"} of the repository's latest release, or None when no repository is configured.
     Raises LauncherError when GitHub cannot be reached or answers something unexpected."""
+    if MANAGED:
+        raise LauncherError(MANAGED_TEXT)
     repository = UPDATE_REPOSITORY if repository is None else repository
     if not repository:
         return None
@@ -833,10 +1073,12 @@ def _fetch(url, opener, timeout=30):
                                               timeout=timeout)
 
 
-def download_update(info, parent=None, on_progress=lambda done, total: None, opener=None, platform=None):
+def download_update(info, parent=None, on_progress=lambda done, total: None, opener=None, platform=None, task=None):
     """Download the new kit of `info` (check_update), check its SHA-256 against the release's SHA256SUMS.txt and unpack it in
     `parent` (default: the folder holding this kit). Returns the new kit's folder; an existing one is reused, nothing is
     overwritten, and this kit, the game and the saves are left as they are."""
+    if MANAGED:
+        raise LauncherError(MANAGED_TEXT)
     version = info["latest"].lstrip("vV")
     name = kit_archive(version, platform)
     assets = info.get("assets") or {}
@@ -846,6 +1088,11 @@ def download_update(info, parent=None, on_progress=lambda done, total: None, ope
     target = parent / f"OrbitalsPCRecomp-{version}"
     if (target / "launcher" / "__main__.py").is_file():
         return target
+    if os.path.lexists(target):
+        raise LauncherError("The update folder already exists. Move it before downloading the update.")
+    stopped = "The download was stopped. Nothing was changed."
+    if task:
+        task.check(stopped)
     try:
         with _fetch(assets["SHA256SUMS.txt"], opener) as response:
             sums = response.read(1 << 20).decode("utf-8", errors="replace")
@@ -855,33 +1102,39 @@ def download_update(info, parent=None, on_progress=lambda done, total: None, ope
                      if len(line.split()) == 2 and line.split()[1].lstrip("*") == name), None)
     if not expected or not re.fullmatch(r"[0-9a-f]{64}", expected):
         raise LauncherError(f"SHA256SUMS.txt of {info['latest']} does not list {name}.")
-    part = parent / (name + ".part")
     digest = hashlib.sha256()
-    try:
-        with _fetch(assets[name], opener, timeout=60) as response, part.open("wb") as out:
-            total = int(response.headers.get("Content-Length") or 0) if getattr(response, "headers", None) else 0
-            done = 0
-            while chunk := response.read(1 << 20):
-                out.write(chunk); digest.update(chunk); done += len(chunk)
-                on_progress(done, total)
-    except OSError as err:
-        part.unlink(missing_ok=True)
-        raise LauncherError("The update download stopped (network or disk). Nothing was changed.") from err
-    if digest.hexdigest() != expected:
-        part.unlink(missing_ok=True)
-        raise LauncherError("The downloaded update does not match its SHA-256: it was discarded, nothing was changed.")
-    staging = parent / (target.name + ".unpacking")
-    shutil.rmtree(staging, ignore_errors=True)
-    try:
+    with tempfile.TemporaryDirectory(prefix=".orbitals-update-", dir=parent) as working:
+        part = Path(working) / "download.part"
+        staging = Path(working) / "unpacking"
+        try:
+            if task:
+                task.check(stopped)
+            with _fetch(assets[name], opener, timeout=30) as response, part.open("wb") as out:
+                total = int(response.headers.get("Content-Length") or 0) if getattr(response, "headers", None) else 0
+                done = 0
+                while chunk := response.read(1 << 20):
+                    out.write(chunk)
+                    digest.update(chunk)
+                    done += len(chunk)
+                    on_progress(done, total)
+                    if task:
+                        task.check(stopped)
+        except OSError as err:
+            if task:
+                task.check(stopped)
+            raise LauncherError("The update download stopped (network or disk). Nothing was changed.") from err
+        if task:
+            task.finish_without_stop(stopped)
+        if digest.hexdigest() != expected:
+            raise LauncherError("The downloaded update does not match its SHA-256: it was discarded, nothing was changed.")
         unpack_kit(part, staging, name)
-        inner = [p for p in staging.iterdir()]
+        inner = list(staging.iterdir())
         root = inner[0] if len(inner) == 1 and inner[0].is_dir() else staging
         if not (root / "launcher" / "__main__.py").is_file():
             raise LauncherError("The downloaded archive is not an Orbitals PC Recomp kit.")
+        if os.path.lexists(target):
+            raise LauncherError("The update folder appeared during the download. It was kept as it is.")
         root.rename(target)
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
-        part.unlink(missing_ok=True)
     LOG.info("event=update_unpacked version=%s", version)
     return target
 
@@ -904,11 +1157,20 @@ def unpack_kit(archive, dest, name):
             t.extractall(root, filter="data")
 
 
-def launch_kit(kit):
+def launch_kit(kit, local=None, game=None, portable=None):
     """Start the launcher of another kit (an update just unpacked) in its own folder, with this Python (it has Tk; the Python
     bundled for the recompiler has none)."""
+    if MANAGED:
+        raise LauncherError(MANAGED_TEXT)
     options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS else {"start_new_session": True}
-    subprocess.Popen([sys.executable, "-B", "-m", "launcher"], cwd=kit, **options)
+    args = [sys.executable, "-B", "-m", "launcher"]
+    if local is not None:
+        args += ["--data-dir", str(local)]
+    if game is not None:
+        args += ["--game-dir", str(game.root)]
+    if portable is not None:
+        args += ["--portable-kit", str(portable)]
+    subprocess.Popen(args, cwd=kit, **options)
 
 
 SETUP_STEPS = 5
@@ -985,7 +1247,7 @@ def linux_deps_error(missing, family=None):
                          "then choose Install again. See BUILDING.md.")
 
 
-def linux_install_command(game_data, install_dir):
+def linux_install_command(game_data, install_dir, game_dir=None):
     script = REPO / "tools/build-orbitals-linux.sh"
     if not script.is_file():
         raise LauncherError("tools/build-orbitals-linux.sh is missing. Extract the full Linux archive.")
@@ -1000,17 +1262,30 @@ def linux_install_command(game_data, install_dir):
             missing.append(".NET 10 runtime")
     if missing:
         raise linux_deps_error(missing)
-    return [tools["bash"], str(script), str(game_data), str(install_dir / "Orbitals"), str(install_jobs())]
+    return [tools["bash"], str(script), str(game_data), str(game_dir or install_dir / "Orbitals"), str(install_jobs())]
 
 
-def install_from_files(game_data, install_dir=None, on_progress=lambda step, total, text: None, command=None, rebuild=False):
+SOURCE_NEEDS = ("exefs/main", "exefs/main.npdm", "romfs")
+
+
+def source_lacks(folder):
+    """What a folder lacks to be the one extracted from the player's copy."""
+    return [need for need in SOURCE_NEEDS if not (Path(folder) / need).exists()]
+
+
+def setup_log(install_dir=None):
+    return Path(install_dir or REPO / "games").resolve() / "setup.log"
+
+
+def install_from_files(game_data, install_dir=None, on_progress=lambda step, total, text: None, command=None, rebuild=False,
+                       *, game_dir=None, object_cache=None):
     """Build from the player's ExeFS and RomFS and record progress in setup.log. `command` supplies a test installer.
     rebuild: recompile the game code even where a compiled one is already there (an update in place)."""
     game_data = Path(game_data).resolve()
-    for need in ("exefs/main", "exefs/main.npdm", "romfs"):
-        if not (game_data / need).exists():
-            raise LauncherError(f"{need} is missing in {game_data.name}: choose the folder extracted from your copy, with exefs and romfs.")
+    for need in source_lacks(game_data):
+        raise LauncherError(f"{need} is missing in {game_data.name}: choose the folder extracted from your copy, with exefs and romfs.")
     install_dir = Path(install_dir or REPO / "games").resolve()
+    game_dir = Path(game_dir).resolve() if game_dir is not None else install_dir / "Orbitals"
     if command is None:
         if WINDOWS:
             script = REPO / "tools/release/setup-windows.ps1"
@@ -1019,19 +1294,24 @@ def install_from_files(game_data, install_dir=None, on_progress=lambda step, tot
             command = [str(Path(os.environ.get("SystemRoot", "C:/Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"),
                        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
                        "-GameData", str(game_data), "-InstallDir", str(install_dir), "-Jobs", str(install_jobs())]
-            if rebuild:   # Linux always recompiles (switchrecomp.py keeps the unchanged objects)
+            if game_dir != install_dir / "Orbitals":
+                command[-2:-2] = ["-GameDir", str(game_dir)]
+            if rebuild:
                 command[-2:-2] = ["-RebuildCode"]
         elif sys.platform.startswith("linux"):
-            command = linux_install_command(game_data, install_dir)
+            command = linux_install_command(game_data, install_dir, game_dir)
         else:
             raise LauncherError("Orbitals setup supports Windows and Linux x86-64.")
     install_dir.mkdir(parents=True, exist_ok=True)
-    log_path = install_dir / "setup.log"
+    log_path = setup_log(install_dir)
     LOG.info("event=install_start jobs=%s", command[-1])
+    env = dict(os.environ, ORBITALS_PYTHON=sys.executable)
+    if object_cache is not None:
+        env.update(ORBITALS_OBJECT_CACHE=str(object_cache), ORBITALS_NO_COPY_DATA="1")
     with log_path.open("w", encoding="utf-8", errors="replace") as log, subprocess.Popen(
             command, cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW if WINDOWS else 0,
-            env=dict(os.environ, ORBITALS_PYTHON=sys.executable)) as process:
+            env=env) as process:
         step, last = 0, ""
         for raw in process.stdout:
             line = raw.decode("utf-8", errors="replace").rstrip()
@@ -1046,7 +1326,137 @@ def install_from_files(game_data, install_dir=None, on_progress=lambda step, tot
     if code:
         raise LauncherError(f"The installation failed (code {code}). The details are in {log_path}.")
     LOG.info("event=install_done")
-    return installation(install_dir / "Orbitals")
+    return installation(game_dir)
+
+
+@dataclass(frozen=True)
+class NupProgress:
+    text: str
+    done: int = 0
+    total: int = 0
+
+
+OCCUPIED_INSTALL_DIR = "The installation folder contains files. Choose an empty or new folder to keep those files."
+
+
+def inspect_install_destination(path):
+    """Return the canonical destination, an existing installation, and the identity of an empty directory."""
+    path = Path(path).expanduser().absolute()
+    if not path.name:
+        raise LauncherError("Choose an installation folder inside the drive.")
+    path = path.parent.resolve() / path.name
+    if not os.path.lexists(path):
+        return path, None, None
+    info = safe_entry(path)
+    if not stat.S_ISDIR(info.st_mode):
+        raise LauncherError("The installation path is a file. Choose a folder.")
+    if not any(path.iterdir()):
+        if path.is_mount():
+            raise LauncherError("Choose a folder inside the mounted drive for the installation.")
+        return path, None, info
+    try:
+        return path, installation(path), None
+    except (OSError, LauncherError) as error:
+        raise LauncherError(OCCUPIED_INSTALL_DIR) from error
+
+
+def publish_installation(stage, destination, empty_directory):
+    """Publish on the destination volume, replacing only the same empty directory selected by the player."""
+    removed = False
+    if os.path.lexists(destination):
+        current = safe_entry(destination)
+        if empty_directory is None or not os.path.samestat(empty_directory, current):
+            raise LauncherError(OCCUPIED_INSTALL_DIR)
+        try:
+            destination.rmdir()
+        except OSError as error:
+            if any(destination.iterdir()):
+                raise LauncherError(OCCUPIED_INSTALL_DIR) from error
+            raise
+        removed = True
+    try:
+        stage.rename(destination)
+    except OSError:
+        if removed:
+            destination.mkdir(exist_ok=True)
+        raise
+
+
+def extract_install_data(archive, game_data, local, notify, task=None):
+    last_progress = 0.0
+
+    def extraction_progress(done, total):
+        nonlocal last_progress
+        if task:
+            task.check("NUP extraction stopped. The temporary data was removed. Choose Install to start again.")
+        now = time.monotonic()
+        if done in (0, total) or now - last_progress >= 0.1:
+            notify(NupProgress("Extracting and verifying game data", done, total))
+            last_progress = now
+
+    def get_zstd():
+        cache = Path(local or data_home()) / "dependencies"
+        return nup_codec.load_zstd(cache, lambda: notify(NupProgress("Preparing Zstandard")))
+
+    notify(NupProgress("Checking the NUP archive"))
+    nup.extract_base(archive, game_data, get_zstd, extraction_progress)
+    build_ids(game_data / "exefs")
+    validate_romfs(game_data / "romfs")
+
+
+def stage_install(source, destination=None, *, from_nup=False, install_dir=None, local=None, task=None,
+                  on_extract=lambda event: None, on_progress=lambda step, total, text: None):
+    """Run the existing installer in a temporary directory on the final installation volume."""
+    source = Path(source).resolve()
+    install_dir = Path(install_dir or REPO / "games").resolve()
+    default = install_dir / "Orbitals"
+    requested = Path(destination or default)
+    try:
+        destination, existing, empty_directory = inspect_install_destination(requested)
+        if existing:
+            raise LauncherError("Orbitals is already installed in this folder. Select the existing installation or choose another folder.")
+        if (destination == install_dir or install_dir.is_relative_to(destination)
+                or any(destination.is_relative_to(install_dir / name)
+                       for name in ("toolchain", "nxshader", "python", ".lock", "setup.log"))):
+            raise LauncherError("Choose a game folder outside the kit's shared tools.")
+        if from_nup and not source.is_file():
+            raise LauncherError("Choose a readable .nup file.")
+        if not from_nup and (destination.is_relative_to(source) or source.is_relative_to(destination)):
+            raise LauncherError("Choose a different folder for the installation and the extracted game files.")
+        with instance_lock(install_dir), tempfile.TemporaryDirectory(prefix=".orbitals-stage-", dir=destination.parent) as work:
+            if empty_directory is not None:
+                with tempfile.TemporaryFile(dir=destination):
+                    pass  # check write access to the selected folder before running the build
+            stage = Path(work) / "Orbitals"
+            stage.mkdir()
+            custom = destination != default
+            shader_source = REPO / "tools/nxshader"
+            if custom and shader_source.is_dir():
+                link_directory(stage / "nxshader", shader_source)
+            game_data = source
+            if from_nup:
+                game_data = stage / DATA
+                extract_install_data(source, game_data, local, on_extract, task)
+                if task:
+                    task.finish_without_stop("NUP extraction stopped. The temporary data was removed. Choose Install to start again.")
+            install_from_files(game_data, install_dir, on_progress, game_dir=stage)
+            if custom and WINDOWS:
+                for name, target in (("toolchain", install_dir / "toolchain"), ("python", REPO / "python")):
+                    if target.is_dir():
+                        link_directory(stage / name, target)
+            publish_installation(stage, destination, empty_directory)
+            try:
+                with (install_dir / "setup.log").open("a", encoding="utf-8") as log:
+                    log.write(f"\nPublished installation: {destination}\n")
+            except OSError:
+                LOG.warning("event=install_publication_log_failed")
+    except (nup.NupError, nup_codec.CodecError) as error:
+        raise LauncherError(str(error)) from error
+    except PermissionError as error:
+        raise LauncherError(f"Permission denied while installing to {requested}. Choose a writable folder and try again.\n\n{error}") from error
+    except OSError as error:
+        raise LauncherError(f"Could not install Orbitals to {requested}.\n\n{error}") from error
+    return installation(destination)
 
 
 def graphics_settings(settings):
@@ -1057,21 +1467,36 @@ def graphics_settings(settings):
 
 def apply_graphics(run, text, settings):
     """Writes the session's Unreal user config layer (RomFS overlay) and returns Orbitals.ini with the graphics keys."""
-    cvars, ini, files = graphics.launch_changes(graphics_settings(settings))
+    options = graphics_settings(settings)
+    _, ini, files = graphics.launch_changes(options)
     for relative, body in files.items():
         write_text(run / DATA / "romfs_overlay" / Path(relative), body)
     for key, value in ini.items():
         text = re.sub(rf"(?m)^\s*{re.escape(key)}\s*=.*$", "", text)
         text = text.rstrip() + f"\n{key}={value}\n"
+    text = re.sub(r"(?m)^[ \t]*display_resolution[ \t]*=.*(?:\n|$)", "", text)
+    resolution = graphics.TV_RESOLUTIONS[settings["tv_resolution"]]
+    if resolution and graphics.effective_mode(options["preset"], options["mode"]) != "Portable":
+        text = text.rstrip() + f"\ndisplay_resolution={resolution}\n"
     return text
 
 
-def launch(game, profiles):
-    game = installation(game.root)
-    settings = profiles.settings
-    cache = profiles.root / "shader-cache" / game.ids["main"]
+def launch(game, profiles, *, overrides=None, run=None):
+    from . import code_update
+
+    settings = profiles.settings | (overrides or {})
     validate_settings(settings)
-    run = session_directory(game, profiles)
+    with ExitStack() as locks:
+        try:
+            locks.enter_context(instance_lock(game.root / code_update.LOCK))
+        except OSError as error:
+            if error.errno not in {errno.EACCES, errno.EPERM, errno.EROFS} or (game.root / code_update.JOURNAL).exists():
+                raise
+        code_update.recover(game.root)
+        game = installation(game.root)
+        code_update.assert_launchable(game)
+        run = session_directory(game, profiles, run=run)
+    cache = profiles.root / "shader-cache" / game.ids["main"]
     try:
         args, env = launch_options(game, run, cache, settings)
         seed_cache(game, cache)
@@ -1079,14 +1504,30 @@ def launch(game, profiles):
         ini = game.root / "Orbitals.ini"
         text = ini.read_text(encoding="utf-8-sig", errors="replace") if ini.is_file() else ""
         fps = graphics.FPS_MODES[settings["fps"]]
-        text = re.sub(r"(?m)^\s*ue_fps\s*=.*$", "", text)
-        write_text(run / "Orbitals.ini", apply_graphics(run, text.rstrip() + f"\nue_fps={fps}\n", settings))
+        keys = ("ue_fps", "display_resolution", "button_layout", "button_accept_bottom", "gyro", "gyro_sensitivity_x", "gyro_sensitivity_y", "gyro_button",
+                "gyro_button_mode", "gyro_calibrate")
+        text = re.sub(rf"(?m)^\s*({'|'.join(keys)})\s*=.*$", "", text)
+        text = text.rstrip() + f"\nue_fps={fps}\n"
+        if layout := BUTTON_LAYOUTS[settings["button_layout"]]:
+            # Layout selects both glyphs and menu convention. Ignore the retired experimental profile checkbox.
+            text += f"button_layout={layout}\nbutton_accept_bottom=1\n"
+        calibrate = settings["gyro"] != "Off" and settings["gyro_calibrate"]
+        if settings["gyro"] != "Off":
+            text += (f"gyro={GYRO_MODES[settings['gyro']]}\ngyro_sensitivity_x={settings['gyro_sensitivity_x']:.2f}\n"
+                     f"gyro_sensitivity_y={settings['gyro_sensitivity_y']:.2f}\ngyro_button={GYRO_BUTTONS[settings['gyro_button']]}\n"
+                     f"gyro_button_mode={GYRO_BUTTON_MODES[settings['gyro_button_mode']]}\n" + ("gyro_calibrate=1\n" if calibrate else ""))
+        write_text(run / "Orbitals.ini", apply_graphics(run, text, settings))
         with (run / "console.log").open("wb") as console:
             process = subprocess.Popen(args, cwd=run, env=env, stdout=console, stderr=subprocess.STDOUT,
                                        stdin=subprocess.DEVNULL)
     except (LauncherError, OSError):
         prune_run_payload(run)
         raise
+    if calibrate and profiles.settings["gyro_calibrate"]:   # consume the saved request after one successful start
+        try:
+            profiles.update_active(settings=profiles.profile["settings"] | {"gyro_calibrate": False})
+        except (OSError, LauncherError):
+            LOG.warning("event=calibration_request_save_failed")
     LOG.info("event=play pid=%s args=%s fps=%s", process.pid, " ".join(args[1:]), fps)
     return process, run
 
@@ -1174,7 +1615,7 @@ def finish_session(run, code, profiles=None):
     prune_run_payload(run)
 
 
-RELEASE_IN_EXE = re.compile(rb"(?<![\w.])(\d+\.\d+\.\d+(?:-[A-Za-z0-9.]+)?) ([0-9a-f]{7,40}|unknown)\x00")
+RELEASE_IN_EXE = re.compile(rb"(?<![\w.])(\d+\.\d+\.\d+(?:-[A-Za-z0-9.]+)?) ([0-9a-f]{7,40}(?:-modified)?|unknown)\x00")
 
 
 def game_release(game):
@@ -1188,12 +1629,23 @@ def game_release(game):
     return match[1].decode("ascii") if match else None
 
 
+UNSTAMPED = "0.1.0 or older"   # what an executable without any release string was made by
+
+
 def outdated_release(game, current=VERSION):
-    """The older release this installation was compiled by, or None when it matches this launcher (or cannot be told)."""
-    release = game_release(game) if game else None
-    if release and version_tuple(release) < version_tuple(current):
-        return release
-    return None
+    """The older release this installation was compiled by, or None when it matches this launcher (or cannot be told).
+    The release string came with the v0.1.5 previews: an executable without it was made by v0.1.0 or an earlier kit (UNSTAMPED);
+    a development build without a stamp says "dev unknown" and is not called outdated."""
+    if not game:
+        return None
+    release = game_release(game)
+    if release:
+        return release if version_tuple(release) < version_tuple(current) else None
+    try:
+        data = game.exe.read_bytes()
+    except OSError:
+        return None
+    return None if b"dev unknown" in data else UNSTAMPED
 
 
 def game_source(game):

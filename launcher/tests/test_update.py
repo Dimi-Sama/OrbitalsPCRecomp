@@ -8,6 +8,7 @@ import unittest
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from launcher import core
 
@@ -59,6 +60,16 @@ class UpdateTest(unittest.TestCase):
             core.download_update(info, self.root, opener=opener, platform="windows")
         self.assertEqual(list(self.root.iterdir()), [])
 
+    def test_existing_unfinished_update_folder_is_preserved(self):
+        info, opener = self.release(kit_zip("0.2.0"))
+        target = self.root / "OrbitalsPCRecomp-0.2.0"
+        target.mkdir()
+        (target / "keep.txt").write_bytes(b"my files")
+        with self.assertRaisesRegex(core.LauncherError, "already exists"):
+            core.download_update(info, self.root, opener=opener, platform="windows")
+        self.assertEqual(list(target.iterdir()), [target / "keep.txt"])
+        self.assertEqual((target / "keep.txt").read_bytes(), b"my files")
+
     def test_a_member_outside_the_folder_is_refused(self):
         info, opener = self.release(kit_zip("0.2.0", {"../evil.txt": "x"}))
         with self.assertRaises(core.LauncherError):
@@ -92,6 +103,7 @@ class OutdatedGameTest(unittest.TestCase):
         self.assertEqual(core.outdated_release(self.game("0.1.5-preview.1 6986926f8308"), current="0.1.5"), "0.1.5-preview.1")
         self.assertIsNone(core.outdated_release(self.game("0.1.5 6986926f8308"), current="0.1.5"))
         self.assertIsNone(core.outdated_release(self.game("dev unknown"), current="0.1.5"))
+        self.assertEqual(core.outdated_release(self.game(None), current="0.1.5"), core.UNSTAMPED)   # v0.1.0 and older: no release string
 
     def test_saves_are_copied_not_moved(self):
         old, new = self.game("0.1.0 b8755a8c1234", "old"), self.game("0.1.5 6986926f8308", "new")
@@ -128,7 +140,8 @@ class LinuxDepsTest(unittest.TestCase):
         error = core.linux_deps_error(["gcc", "spirv-val", "spirv-opt"], "apt")
         self.assertEqual(error.copy, "sudo apt install build-essential spirv-tools")
         self.assertIn(error.copy, str(error))
-        self.assertIsNone(core.linux_deps_error(["gcc"], None).copy)
+        with patch.object(core, "linux_family", return_value=None):
+            self.assertIsNone(core.linux_deps_error(["gcc"]).copy)
 
 
 class InstallProgressTest(unittest.TestCase):
@@ -143,3 +156,22 @@ class InstallProgressTest(unittest.TestCase):
         self.assertAlmostEqual(core.install_fraction(4, 5, "  compiled 886/886 (1800s)"), core.install_fraction(5, 5, "Completing"))
         self.assertLess(core.install_fraction(1, 5, "Python"), core.install_fraction(2, 5, "tools"))
         self.assertEqual(core.install_fraction(9, 5, "junk compiled 5/0"), 1.0)   # clamped
+
+
+class PrepareOldInstallTest(unittest.TestCase):
+    """An installation made by a kit older than v0.1.5 has no shader preparation tools: say so and point to UPDATE THE GAME
+    (v0.1.5 on a v0.1.0 installation: "can't open file ... nxs_kraken.py")."""
+
+    def test_old_kit_tools_give_a_clear_message(self):
+        root = Path(tempfile.mkdtemp(prefix="orbitals-oldkit-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        tools = root / "nxshader"; tools.mkdir()
+        (tools / "nxs_live.py").write_text("# v0.1.0 kit: the live translator only\n")
+        exe = root / "Orbitals.exe"; exe.write_bytes(b"MZ\0\0\0" + b"0.1.0 b8755a8c1234\0")
+        game = SimpleNamespace(root=root, exe=exe)
+        from unittest.mock import patch
+        with patch.object(core, "shader_tools", return_value=tools):
+            with self.assertRaises(core.LauncherError) as caught:
+                core.prepare_shaders(game, profiles=None)
+        self.assertIn("UPDATE THE GAME", str(caught.exception))
+        self.assertIn("0.1.0", str(caught.exception))

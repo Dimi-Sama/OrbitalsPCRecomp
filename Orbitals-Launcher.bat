@@ -4,6 +4,10 @@ rem downloads for the recompiler has no Tk. Nothing else is installed here: the 
 rem the build tools into this folder, each checked against its pinned SHA-256.
 setlocal
 cd /d "%~dp0"
+if /i "%~1"=="--play" if "%RECOMPLAUNCHER%"=="1" if not defined RECOMPLAUNCHER_VERSION goto liftoff
+if /i "%~1"=="--prepare" goto windowless
+if /i "%~1"=="--play" goto windowless
+:liftoff
 set "PYL="
 for %%C in ("py -3.14" "py -3.13" "py -3.12" "python") do (
   if not defined PYL (
@@ -14,8 +18,12 @@ rem the launcher runs in its own window, without a console (pyw / pythonw); this
 if not defined PYL goto nopython
 set "PYW=pythonw"
 if /i "%PYL:~0,3%"=="py " set "PYW=pyw %PYL:~3%"
+if /i "%~1"=="--play" goto trackedplay
 start "" %PYW% -B -m launcher %*
 exit /b 0
+:trackedplay
+start "" /wait %PYW% -B -m launcher %*
+exit /b %errorlevel%
 :nopython
 echo.
 echo The launcher needs Python 3.12 or newer with Tk (the python.org installer includes it).
@@ -35,3 +43,22 @@ echo Install Python 3.12+ from https://www.python.org/downloads/windows/ (keep "
 echo then run Orbitals-Launcher.bat again. Without the launcher: see README.md, "Windows - one command".
 pause
 exit /b 1
+:windowless
+rem RecompLauncher setup and play take no Tk and print progress to stdout.
+set "PYL="
+if exist "python\python.exe" set "PYL=python\python.exe"
+for %%C in ("py -3.14" "py -3.13" "py -3.12" "python") do (
+  if not defined PYL (
+    %%~C -c "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)" >nul 2>nul && set "PYL=%%~C"
+  )
+)
+if not defined PYL if /i "%~1"=="--prepare" (
+  "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "tools\bootstrap-python.ps1"
+)
+if not defined PYL if exist "python\python.exe" set "PYL=python\python.exe"
+if not defined PYL (
+  echo Python is missing. Run Install.bat, then try again.
+  exit /b 1
+)
+%PYL% -B -m launcher %*
+exit /b %errorlevel%

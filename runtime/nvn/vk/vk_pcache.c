@@ -52,7 +52,16 @@ int vkpc_init(void) {
     wchar_t dir[MAX_PATH];
     void *data = NULL; size_t size = 0;
     if (!cache_dir(dir, MAX_PATH)) {
-        _snwprintf(g_pc.path, MAX_PATH, L"%ls\\pipelines-%04x-%04x.bin", dir, g_vk.props.vendorID, g_vk.props.deviceID);
+        // Keep the baseline cache and give each precision/synchronization mode its own
+        // driver cache. The offline translation cache stores the input SPIR-V.
+        const wchar_t *variant = L"";
+        if (g_vk.no_contraction == VK_NO_CONTRACTION_HULL) variant = L"-hull1";
+        else if (g_vk.no_contraction == VK_NO_CONTRACTION_GRAPHICS) variant = L"-vsfs1";
+        int len = _snwprintf(g_pc.path, MAX_PATH - 4, L"%ls\\pipelines-%04x-%04x%ls%ls.bin",
+                             dir, g_vk.props.vendorID, g_vk.props.deviceID, g_vk.warp_sync ? L"-warp1" : L"", variant);
+        if (len < 0 || len >= MAX_PATH - 4) g_pc.path[0] = 0;
+    }
+    if (g_pc.path[0]) {
         _snwprintf(g_pc.tmp, MAX_PATH, L"%ls.tmp", g_pc.path);
         FILE *f = _wfopen(g_pc.path, L"rb");
         if (f) {

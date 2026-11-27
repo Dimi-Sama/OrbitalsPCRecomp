@@ -21,17 +21,19 @@ Output (next to the executable):
 
 LEGAL: does not include or download games, keys or firmware. Use your own copy.
 """
-import argparse, os, sys, shlex, shutil, subprocess, time, hashlib, filecmp, re, struct, threading
+import argparse, os, sys, shlex, shutil, subprocess, time, hashlib, filecmp, re, struct, tempfile
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-import nxloader, codegen
+import nxloader, codegen, module_build
 
 RT = os.path.join(HERE, 'runtime')
+DEFAULT_CHUNK = 30000
+DEFAULT_OPT = '2'
 RUNTIME_SRC = ['plat', 'mem', 'kernel', 'ipc', 'svc_core', 'audio', 'svc_hid', 'svc_fs', 'svc_vi', 'nvdrv', 'svc_ns2', 'sm86', 'gpu', 'gpu_engines',
-               'gpu_3d', 'loader', 'main', 'nvn_hook', 'nvn_glue', 'orbitals_settings']
-ABI = 1
+               'gpu_3d', 'loader', 'main', 'nvn_hook', 'nvn_glue', 'orbitals_settings', 'orbitals_input', 'orbitals_buttons']
 # portable compilers next to us: tcc\, the GCC package (gcc\), w64devkit
 CC_DIRS = [os.path.join(HERE, *d) for d in (('tcc',), ('tools', 'tcc'), ('gcc', 'bin'), ('gcc', 'Library', 'bin'),
                                              ('w64devkit', 'bin'))]
@@ -134,7 +136,7 @@ def gen_module(prog, mods, npdm, outdir, title, chunk_instrs, say):
         for l in sorted(f.leaders): ents.append((l, f.name))
     names = sorted({f.name for f in funcs.values()})
     idx = {n: i for i, n in enumerate(names)}
-    L = ['#include "cpu.h"', '#include "cpu_helpers.c"']
+    L = ['#include "module_abi.h"', '#include "cpu_helpers.c"']
     L += ['void %s(CPU* RESTRICT c, u64 e);' % n for n in names]
     L.append(codegen.gen_interp(step_mode=False))
     L.append('GuestFn swr_interp_entry;')
@@ -142,7 +144,6 @@ def gen_module(prog, mods, npdm, outdir, title, chunk_instrs, say):
     L.append('static const u32 ENT_OFF[%d]={%s};' % (max(1, len(ents)), ','.join('%d' % (a - nxloader.CODE_BASE) for a, _ in ents) or '0'))
     L.append('static const u32 ENT_FN[%d]={%s};' % (max(1, len(ents)), ','.join(str(idx[n]) for _, n in ents) or '0'))
     L.append('static u64 ENT_ADDR[%d]; static GuestFn ENT_PTR[%d];' % (max(1, len(ents)), max(1, len(ents))))
-    L.append('typedef struct SwrModInfo { const char* name; u64 base, size; u8 build_id[32]; u32 text_off, text_size, ro_off, ro_size, data_off, data_size, bss_size; u32 is_nro; } SwrModInfo;')
     mi = []
     for m in mods:
         bid = (m.build_id + b'\0' * 32)[:32]
@@ -152,16 +153,15 @@ def gen_module(prog, mods, npdm, outdir, title, chunk_instrs, say):
     L.append('static const SwrModInfo MODS[%d]={%s};' % (len(mods), ','.join(mi)))
     lo = min(m.base + m.text[0] for m in mods); hi = max(m.base + m.text[0] + m.text[1] for m in mods)
     np_ = nxloader.parse_npdm(npdm)
-    L.append('''typedef struct SwrModule { u32 abi; u32 nmods; const SwrModInfo* mods; u32 nentries; const u64* entry_addr; const GuestFn* entry_fn;
-  GuestFn interp; u64 code_lo, code_hi; const char* title; u64 title_id; u32 main_stack, main_prio, main_core;
-  void (*init)(const RtAPI* rt); u64 (*step)(CPU* c, u32 w, u64 pc); } SwrModule;''')
+    dyn = sorted(getattr(prog, 'dyn_calls', ()))
+    L.append('SWR_EXPORT const u64 swr_dynamic_calls[%d]={%s};' % (len(dyn) + 1, ','.join('0x%XULL' % a for a in dyn + [0])))
     L.append('static const RtAPI* g_rt;')
     L.append('static void mod_init(const RtAPI* rt){ g_rt=rt; }')
     L.append('static SwrModule MOD;')
     L.append('SWR_EXPORT const SwrModule* swr_module(void){')
     L.append(' for(u32 i=0;i<%d;i++){ ENT_ADDR[i]=0x%XULL+ENT_OFF[i]; ENT_PTR[i]=FNS[ENT_FN[i]]; }' % (len(ents), nxloader.CODE_BASE))
     L.append(' swr_interp_entry=swr_interp;')
-    L.append(' MOD.abi=%d; MOD.nmods=%d; MOD.mods=MODS; MOD.nentries=%d; MOD.entry_addr=ENT_ADDR; MOD.entry_fn=ENT_PTR; MOD.interp=swr_interp;' % (ABI, len(mods), len(ents)))
+    L.append(' MOD.abi=SWR_MODULE_ABI; MOD.nmods=%d; MOD.mods=MODS; MOD.nentries=%d; MOD.entry_addr=ENT_ADDR; MOD.entry_fn=ENT_PTR; MOD.interp=swr_interp;' % (len(mods), len(ents)))
     L.append(' MOD.code_lo=0x%XULL; MOD.code_hi=0x%XULL; MOD.title="%s"; MOD.title_id=0x%XULL;' % (lo, hi, title.replace('"', ''), np_['title_id']))
     L.append(' MOD.main_stack=%d; MOD.main_prio=%d; MOD.main_core=%d; MOD.init=mod_init; return &MOD; }' % (np_['stack'], np_['prio'], np_['core']))
     p = os.path.join(outdir, 'module.c')
@@ -171,68 +171,189 @@ def gen_module(prog, mods, npdm, outdir, title, chunk_instrs, say):
     return files
 
 
-def compile_all(files, cc, opt, outdir, target_win, jobs, say, extra_flags=()):
-    objs = []
-    base = [cc]
+def module_cflags(cc, opt, target_win, extra_flags=()):
     if is_tcc(cc):
-        flags = ['-w', '-I', RT] + tcc_b(cc)
-    else:
-        flags = ['-O' + opt, '-fno-strict-aliasing', '-fwrapv', '-w', '-I', RT, '-foptimize-sibling-calls', '-fno-semantic-interposition']
-        if not target_win: flags += ['-fPIC', '-fvisibility=hidden']
-        flags += list(extra_flags)
-    t0 = time.time()
-    done = [0]; lock = threading.Lock()
+        return ['-w', '-I', RT] + tcc_b(cc)
+    flags = ['-O' + opt, '-fno-strict-aliasing', '-fwrapv', '-w', '-I', RT, '-foptimize-sibling-calls', '-fno-semantic-interposition']
+    if not target_win:
+        flags += ['-fPIC', '-fvisibility=hidden']
+    return flags + list(extra_flags)
 
-    # object names are keyed on compiler + flags + cpu.h, so tcc and gcc objects never mix
-    with open(os.path.join(RT, 'cpu.h'), 'rb') as f1, open(os.path.join(RT, 'cpu_helpers.c'), 'rb') as f2:
-        key = '|'.join(base + flags) + '|' + f1.read().decode('latin1') + '|' + f2.read().decode('latin1')
-    try:
-        key = key.encode('latin1')
-    except UnicodeEncodeError:      # compiler path outside latin-1, e.g. a Cyrillic or CJK user name
-        key = key.encode('utf-8')
-    sig = hashlib.sha1(key).hexdigest()[:10]
+
+def module_ldflags(cc, target_win):
+    if is_tcc(cc):
+        return tcc_b(cc)
+    return ['-static-libgcc'] if target_win else ['-lm']
+
+
+def extra_cflags(cc, native=False):
+    if is_tcc(cc):
+        return []
+    return (['-march=native'] if native else []) + os.environ.get('SWR_CFLAGS', '').split()
+
+
+def compiler_output(cc, *args, **options):
+    return subprocess.check_output([cc, *args], env=cc_env(cc), stderr=subprocess.STDOUT, timeout=30,
+                                   creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
+                                   **options)
+
+
+def compiler_identity(cc):
+    commands = [('version', '-v' if is_tcc(cc) else '--version')]
+    if not is_tcc(cc):
+        commands.append(('target', '-dumpmachine'))
+    identity = {name: compiler_output(cc, flag).decode(errors='replace').splitlines()[0] for name, flag in commands}
+    identity['driver_sha256'] = module_build.file_hash(shutil.which(cc) or cc)
+    return identity
+
+
+def module_options(cc, opt, target_win, extra_flags):
+    return {
+        'target': 'win64' if target_win else 'linux',
+        'compile': ['<runtime>' if flag == RT else flag for flag in module_cflags(cc, opt, target_win, extra_flags)],
+        'link': module_ldflags(cc, target_win),
+        'environment': {key: os.environ[key] for key in ('CPATH', 'C_INCLUDE_PATH', 'GCC_EXEC_PREFIX', 'COMPILER_PATH',
+                                                         'LIBRARY_PATH', 'SOURCE_DATE_EPOCH') if key in os.environ},
+        'recipe': module_build.functions_hash({'module_cflags', 'module_ldflags', 'extra_cflags', 'compile_all',
+                                                'link_module', 'gen_module'}),
+        'windows_toolchain': module_build.source_hash(('tool/get_deps.py',)) if target_win else None,
+    }
+
+
+def read_hints(path):
+    if not os.path.isfile(path):
+        return []
+    hints = set()
+    with open(path) as stream:
+        for line in stream:
+            try: hints.add(int(line.strip(), 16))
+            except ValueError: pass
+    return sorted(hints)
+
+
+def generation_environment():
+    flags = [name for name in ('SWR_A64_NO_INLINE_SIMD', 'SWR_NO_BUILTIN_PATCHES') if os.environ.get(name)]
+    return {'generation_flags': flags} if flags else {}
+
+
+def generation_inputs(source, title, chunk, interp_only, hints, romfs=None):
+    if os.path.isfile(source) and source.lower().endswith('.nro'):
+        game = {'nro': module_build.file_hash(source)}
+    else:
+        game = module_build.game_inputs(Path(nxloader.find_exefs(source)), Path(romfs) if romfs else None)
+    return {'contract': module_build.runtime_contract(), 'game': game, 'title': title,
+            'chunk': chunk, 'interp_only': interp_only, 'hints': hints} | generation_environment()
+
+
+def module_identity_file(build, inputs):
+    path = os.path.join(build, 'module_identity.c')
+    write_if_changed(path, '#include "cpu.h"\n'
+                     'SWR_EXPORT const char swr_module_contract[] = "%s%s";\n'
+                     'SWR_EXPORT const char swr_code_fingerprint[] = "%s%s";\n' %
+                     (module_build.MODULE_MARKER, inputs['contract'],
+                      module_build.FINGERPRINT_MARKER, module_build.digest(inputs)))
+    return path
+
+
+def orbitals_inputs(exefs, romfs, hints, target_win, compiler, extra_flags=(), *, compiler_environment=None):
+    cc = 'x86_64-w64-mingw32-gcc' if target_win else 'gcc'
+    return {'contract': module_build.runtime_contract(), 'game': module_build.game_inputs(exefs, romfs),
+            'title': 'Orbitals', 'chunk': DEFAULT_CHUNK, 'interp_only': False, 'hints': hints,
+            'options': module_options(cc, DEFAULT_OPT, target_win, extra_flags), 'compiler': compiler,
+            'compiler_environment': compiler_environment} | generation_environment()
+
+
+def object_cache_context(cc, flags, compiler):
+    # All generated units include only these project headers. Hash the effective
+    # preprocessing environment, including libc and compiler headers.
+    headers = compiler_output(cc, *flags, '-E', '-P', '-x', 'c', '-',
+                              input=b'#include "module_abi.h"\n#include "cpu_helpers.c"\n')
+    tools = {}
+    for name in (() if compiler.get('driver') == 'zig-cc' else ('cc1', 'as')):
+        path = os.fsdecode(compiler_output(cc, '-print-prog-name=' + name).strip())
+        path = shutil.which(path, path=cc_env(cc)['PATH']) or path
+        if os.path.isfile(path):
+            tools[name] = module_build.file_hash(path)
+    return module_build.digest([compiler, tools, ['<runtime>' if flag == RT else flag for flag in flags],
+                                hashlib.sha256(headers).hexdigest()])
+
+
+def module_compiler_environment(cc, opt, target_win, flags, compiler):
+    if is_tcc(cc) or flags:
+        return None
+    objects = object_cache_context(cc, module_cflags(cc, opt, target_win), compiler)
+    if compiler.get('driver') == 'zig-cc':
+        return objects  # the driver fingerprint already covers Zig's built-in linker
+    inputs = []
+    for query in ('-print-prog-name=ld', '-print-libgcc-file-name'):
+        path = os.fsdecode(compiler_output(cc, query).strip())
+        path = shutil.which(path, path=cc_env(cc)['PATH']) or path
+        inputs.append(module_build.file_hash(path) if os.path.isfile(path) else None)
+    return module_build.digest([objects, inputs])
+
+
+def compile_all(files, cc, opt, outdir, target_win, jobs, say, extra_flags=(), *, object_cache=None, compiler=None):
+    flags = module_cflags(cc, opt, target_win, extra_flags)
+    # Custom switches can inject inputs outside the standard header set (e.g.
+    # response files or plugins), and -march=native depends on the current CPU.
+    cacheable = not is_tcc(cc) and not extra_flags and compiler is not None
+    cache = Path(object_cache or Path(outdir) / 'objects-v1') if cacheable else None
+    if cache:
+        cache.mkdir(parents=True, exist_ok=True)
+    context = object_cache_context(cc, flags, compiler) if cache else None
+    t0 = time.time()
 
     def one(src):
-        obj = os.path.splitext(src)[0] + '.' + sig + '.o'
-        err = None
-        if not (os.path.exists(obj) and os.path.getmtime(obj) >= os.path.getmtime(src)):
-            # write to a temp name: a build that is cancelled or crashes must not leave a
-            # truncated .o that looks newer than its .c and gets reused next time
-            tmp = obj + '.tmp'
-            err = run_cc(base + flags + ['-c', src, '-o', tmp], cc)
-            if err is None: replace_retry(tmp, obj)
-            elif os.path.exists(tmp): os.remove(tmp)
-        with lock:
-            done[0] += 1; n = done[0]
-        if n % 10 == 0 or n == len(files):
-            say('  compiled %d/%d (%.0fs)' % (n, len(files), time.time() - t0))
-        return obj, err
+        path = Path(src).resolve()
+        if cache:
+            key = module_build.digest([context, path.name, module_build.file_hash(path)])
+            obj = cache / (key + '.o')
+            if obj.is_file() and obj.stat().st_size:
+                return obj, None, True
+        else:
+            obj = path.with_suffix('.o')
+        fd, tmp = tempfile.mkstemp(suffix='.o', dir=obj.parent)
+        os.close(fd)
+        try:
+            stable_path = [] if is_tcc(cc) else ['-ffile-prefix-map=%s=.' % path.parent]
+            err = run_cc([cc, *flags, *stable_path, '-c', str(path), '-o', tmp], cc)
+            if err is None:
+                replace_retry(tmp, obj)
+            return obj, err, False
+        finally:
+            Path(tmp).unlink(missing_ok=True)
+
+    objs, hits = [], 0
     with ThreadPoolExecutor(max_workers=jobs) as ex:
-        for obj, err in ex.map(one, files):
+        for n, (obj, err, reused) in enumerate(ex.map(one, files), 1):
             if err:
-                ex.shutdown(cancel_futures=True)   # don't keep compiling the rest
+                ex.shutdown(cancel_futures=True)
                 raise SystemExit('Compilation failed:\n' + err[-4000:])
             objs.append(obj)
+            hits += reused
+            if n % 10 == 0 or n == len(files):
+                say('  compiled %d/%d (%.0fs, %d reused)' % (n, len(files), time.time() - t0, hits))
+    say('Object cache: %d reused, %d compiled (%.2fs)' % (hits, len(files) - hits, time.time() - t0))
     return objs
 
 
 def link_module(objs, cc, out, target_win, say):
     # big games have hundreds of objects and windows caps command lines at ~32K, so use an @rsp file
     # (gcc and tcc both take it) with short relative names
-    bdir = os.path.dirname(os.path.abspath(objs[0])) if objs else '.'
-    names = [os.path.relpath(os.path.abspath(o), bdir).replace('\\', '/') for o in objs]
-    rsp = os.path.join(bdir, 'objects.rsp')
-    with open(rsp, 'w') as fo:
-        fo.write('\n'.join('"%s"' % n for n in names) + '\n')
     out = os.path.abspath(out)
     if os.path.isfile(cc): cc = os.path.abspath(cc)
-    if is_tcc(cc):
-        cmd = [cc, '-shared', '-o', out] + tcc_b(cc) + ['@objects.rsp']
-    else:
-        cmd = [cc, '-shared', '-o', out, '@objects.rsp']
-        if not target_win: cmd += ['-lm']
-        else: cmd += ['-static-libgcc']
-    err = run_cc(cmd, cc, cwd=bdir)
+    with tempfile.TemporaryDirectory(dir=os.path.dirname(out), prefix='.link-') as work:
+        rsp = Path(work) / 'objects.rsp'
+        names = []
+        for obj in objs:
+            try:
+                name = os.path.relpath(obj, work)
+            except ValueError:  # an explicitly configured cache on a different Windows drive
+                name = os.path.abspath(obj)
+            names.append('"%s"\n' % Path(name).as_posix().replace('"', '\\"'))
+        rsp.write_text(''.join(names), encoding='utf-8')
+        cmd = [cc, '-shared', '-o', out, '@objects.rsp', *module_ldflags(cc, target_win)]
+        err = run_cc(cmd, cc, cwd=work)
     if err: raise SystemExit('Linking failed:\n' + err[-4000:])
     if is_tcc(cc):
         # tcc also writes an export list next to the dll that nothing uses
@@ -343,6 +464,7 @@ def build_runtime(cc, out, target_win, backend, say, opt='2'):
     vp9 = os.path.isfile(os.path.join(vp, 'libvpx.a')) and backend in ('win32', 'x11', 'headless')
     cmd = [cc] + ([] if target_win else ['-std=gnu17']) + ([] if is_tcc(cc) else ['-ffile-prefix-map=' + HERE + '=.']) + ['-O' + opt, '-w', '-fno-strict-aliasing', '-Wl,-S', '-I', RT, '-I', os.path.join(RT, 'bcn'), '-I', os.path.join(RT, 'spvc'), '-I', os.path.join(RT, 'oh264', 'include'), '-I', os.path.join(RT, 'opus', 'include')] + srcs + ['-o', out]
     cmd += ['-DSWR_RELEASE="%s"' % release_id()]   # the log's first line (bug reports): the release and the commit it was built from
+    cmd += ['-DSWR_CODE_CONTRACT="%s"' % module_build.runtime_contract()]
     if target_win and backend == 'win32': cmd += ['-DSWR_RECORD_AUDIO']
     if not h264: cmd += ['-DSWR_NO_H264']
     if not opus_libs: cmd += ['-DSWR_NO_OPUS']
@@ -466,9 +588,9 @@ def main():
     ap.add_argument('-o', '--out', help='output name (no extension)')
     ap.add_argument('--outdir', help='output folder')
     ap.add_argument('--cc', help='C compiler (gcc, clang, tcc, x86_64-w64-mingw32-gcc)')
-    ap.add_argument('-O', default='2', help='optimization level (0-3)')
+    ap.add_argument('-O', default=DEFAULT_OPT, help='optimization level (0-3)')
     ap.add_argument('--jobs', type=int, default=os.cpu_count() or 4)
-    ap.add_argument('--chunk', type=int, default=30000, help='instructions per C file')
+    ap.add_argument('--chunk', type=int, default=DEFAULT_CHUNK, help='instructions per C file')
     ap.add_argument('--target', choices=['auto', 'win64', 'linux'], default='auto')
     ap.add_argument('--backend', choices=['auto', 'win32', 'x11', 'headless'], default='auto')
     ap.add_argument('--native', action='store_true', help='optimize for THIS processor (-march=native)')
@@ -477,11 +599,17 @@ def main():
     ap.add_argument('--interp-only', action='store_true', help='(diagnostics) no recompilation, everything interpreted')
     ap.add_argument('--runtime', help='use an already built runtime (.exe) instead of building it')
     ap.add_argument('--build-runtime', action='store_true', help='build bin/runtime_<target>_<backend> with GCC and exit')
+    ap.add_argument('--check-runtime', metavar='FILE', help='check that a prebuilt runtime matches this generator')
+    ap.add_argument('--check-module', action='store_true', help='check a standard Orbitals build against the current inputs')
+    ap.add_argument('--object-cache', help='folder for reusable compiled objects')
+    ap.add_argument('--no-copy-data', action='store_true', help='leave the installation data and INI untouched')
     ap.add_argument('-q', '--quiet', action='store_true')
     a = ap.parse_args()
     say = (lambda m: None) if a.quiet else (lambda m: print(m, flush=True))
     target_win = a.target == 'win64' or (a.target == 'auto' and sys.platform.startswith('win'))
     backend = a.backend if a.backend != 'auto' else ('win32' if target_win else 'x11')
+    if a.check_runtime:
+        return 0 if module_build.marker_value(a.check_runtime, module_build.RUNTIME_MARKER) == module_build.runtime_contract() else 1
     if a.build_runtime:
         cc = find_cc(a.cc, target_win)
         if not cc: raise SystemExit('C compiler not found: %s' % (a.cc or 'gcc'))
@@ -498,6 +626,23 @@ def main():
     if not a.no_build:
         cc = find_cc(a.cc, target_win)
         if not cc: raise SystemExit('C compiler not found: %s' % a.cc if a.cc else 'No C compiler found (gcc, clang or tcc).')
+    prebuilt = a.runtime or runtime_path(target_win, backend)
+    if not a.no_build and (a.runtime or os.path.isfile(prebuilt)):
+        if module_build.marker_value(prebuilt, module_build.RUNTIME_MARKER) != module_build.runtime_contract():
+            raise SystemExit('The prebuilt runtime expects different recompiled code. Build the runtime for this kit first.')
+    if a.check_module:
+        source = Path(a.input)
+        outdir = Path(a.outdir or os.getcwd())
+        module = outdir / ('Orbitals_code.dll' if target_win else 'Orbitals_code.so')
+        saved = module_build.read_manifest(module)
+        if not saved:
+            return 1
+        compiler = compiler_identity(cc)
+        flags = extra_cflags(cc, a.native)
+        inputs = orbitals_inputs(source / 'exefs', source / 'romfs', read_hints(outdir / 'Orbitals.hints'),
+                                 target_win, compiler, flags,
+                                 compiler_environment=module_compiler_environment(cc, a.O, target_win, flags, compiler))
+        return 0 if saved['inputs'] == inputs and module_build.verified_module(module, saved, inputs['contract']) else 1
     say('SwitchRecomp - use your own copy of the game. No games or keys included.')
     try:
         mods, npdm, romfs = nxloader.load_program(a.input)
@@ -518,14 +663,10 @@ def main():
     modout = base + ('_code.dll' if target_win else '_code.so')
 
     if not a.no_build: check_writable(exe, modout)
-    hints = []
-    hp = base + '.hints'
-    if os.path.exists(hp):
-        with open(hp) as fi:
-            for ln in fi:
-                try: hints.append(int(ln.strip(), 16))
-                except ValueError: pass
+    hints = read_hints(base + '.hints')
+    if hints:
         say('Previous execution hints: %d' % len(hints))
+    inputs = generation_inputs(a.input, title, a.chunk, a.interp_only, hints, romfs)
     prog = codegen.Program(mods, hints)
     if a.interp_only:
         prog.funcs = {}; prog.extra_entries = set()
@@ -536,32 +677,45 @@ def main():
     os.makedirs(build, exist_ok=True)
     say('Translating ARM64 to C...')
     files = gen_module(prog, mods, npdm, build, title, a.chunk, say)
+    module_build.write_json(Path(build) / 'generation.json', inputs | {'units': [Path(file).name for file in files]})
     datadir = base + '_data'
-    copy_data(mods, npdm, romfs, a.input, datadir, say)
-    if not os.path.exists(base + '.ini'):
-        with open(base + '.ini', 'w', encoding='utf-8') as fo: fo.write(INI % {'title': title})
-    if a.no_build: return
+    if not a.no_copy_data:
+        copy_data(mods, npdm, romfs, a.input, datadir, say)
+        if not os.path.exists(base + '.ini'):
+            with open(base + '.ini', 'w', encoding='utf-8') as fo: fo.write(INI % {'title': title})
+    if a.no_build:
+        return
     # The compiler workers only need the generated C files. Release the decoded game first.
     del prog, mods
     say('Compiling with %s (-O%s, %d at a time)...' % (os.path.basename(cc), a.O, a.jobs))
-    extra = []
-    if a.native and not is_tcc(cc): extra.append('-march=native')
-    if os.environ.get('SWR_CFLAGS') and not is_tcc(cc): extra += os.environ['SWR_CFLAGS'].split()   # e.g. -march for someone else's cpu
-    objs = compile_all(files, cc, a.O, build, target_win, a.jobs, say, extra)
+    extra = extra_cflags(cc, a.native)
+    compiler = compiler_identity(cc)
+    inputs.update(options=module_options(cc, a.O, target_win, extra), compiler=compiler,
+                  compiler_environment=module_compiler_environment(cc, a.O, target_win, extra, compiler))
+    files.append(module_identity_file(build, inputs))
+    objs = compile_all(files, cc, a.O, build, target_win, a.jobs, say, extra,
+                       object_cache=a.object_cache, compiler=compiler)
     say('Linking %s ...' % os.path.basename(modout))
-    link_module(objs, cc, modout, target_win, say)
-    if a.runtime:
-        shutil.copyfile(a.runtime, exe)
-    else:
-        pre = runtime_path(target_win, backend)
-        if os.path.exists(pre):
-            shutil.copyfile(pre, exe)
+    with tempfile.TemporaryDirectory(dir=outdir, prefix='.recompile-') as work:
+        pending_module = Path(work) / Path(modout).name
+        pending_exe = Path(work) / Path(exe).name
+        link_module(objs, cc, str(pending_module), target_win, say)
+        if os.path.isfile(prebuilt):
+            shutil.copyfile(prebuilt, pending_exe)
         else:
             say('Compiling the runtime (%s)...' % backend)
-            build_runtime(cc, exe, target_win, backend, say)
-    if not target_win: os.chmod(exe, 0o755)
+            build_runtime(cc, str(pending_exe), target_win, backend, say)
+        if not target_win:
+            pending_exe.chmod(0o755)
+        manifest = {'schema': 1, 'fingerprint': module_build.digest(inputs), 'inputs': inputs,
+                    'module_sha256': module_build.file_hash(pending_module)}
+        if not module_build.verified_module(pending_module, manifest, inputs['contract']):
+            raise SystemExit('The new module is missing its build identity.')
+        replace_retry(pending_module, modout)
+        replace_retry(pending_exe, exe)
+        module_build.write_json(module_build.manifest_path(modout), manifest)
     say('Done: %s' % exe)
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

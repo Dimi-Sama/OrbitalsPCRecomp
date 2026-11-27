@@ -11,6 +11,7 @@
 #include "rt.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -44,6 +45,15 @@ void plat_watch_page_arm(u64 guest){ (void)guest; }
 typedef struct { const char* name; u64 t0, t1; u32 tid; } TrSpan;
 enum { TR_MAX = 1<<20 };
 static TrSpan* g_tr; static volatile long g_ntr; static long g_tr_first=-1, g_tr_n=10, g_tr_frame;
+static int g_tr_requested;
+static int tr_hotkey(const char* config){
+  return config && !strncmp(config,"hotkey",6) && (!config[6] || config[6]==':');
+}
+int swr_trace_request(void){
+  if(!tr_hotkey(getenv("SWR_TRACE"))) return 0;
+  __atomic_store_n(&g_tr_requested,1,__ATOMIC_RELEASE);
+  return 1;
+}
 static u32 tr_tid(void){
 #ifdef _WIN32
   return (u32)GetCurrentThreadId();
@@ -83,11 +93,15 @@ void swr_present_pace(u32 iv){
 void plat_dump_native_stacks(void){}
 void swr_trace_poll(void){   /* each present (hle_nvn.c): opens and closes SWR_TRACE's window */
   static int st=-1;
-  if(st<0){ st=0; const char* e=getenv("SWR_TRACE"); if(e && *e){ char* q; g_tr_first=strtol(e,&q,10); if(*q==':') g_tr_n=strtol(q+1,NULL,10); if(g_tr_n<1) g_tr_n=1;
+  if(st<0){ st=0; const char* e=getenv("SWR_TRACE"); if(e && *e){ const char* q;
+              if(tr_hotkey(e)) q=e+6;
+              else { char* end; long first=strtol(e,&end,10); g_tr_first=first>0?first:0; q=end; }
+              if(*q==':') g_tr_n=strtol(q+1,NULL,10); if(g_tr_n<1) g_tr_n=1;
               g_tr=(TrSpan*)malloc(sizeof *g_tr*(size_t)TR_MAX); if(g_tr) st=1; } }
   if(st==0) return;
   g_tr_frame++;
-  if(st==1 && g_tr_frame>=g_tr_first){ g_ntr=0; g_swr_trace_on=1; st=2; }
+  if(st==1 && g_tr_first<0 && __atomic_load_n(&g_tr_requested,__ATOMIC_ACQUIRE)) g_tr_first=g_tr_frame;
+  if(st==1 && g_tr_first>=0 && g_tr_frame>=g_tr_first){ g_ntr=0; g_swr_trace_on=1; st=2; }
   else if(st==2 && g_tr_frame>=g_tr_first+g_tr_n){ g_swr_trace_on=0; st=3; tr_write(); }
 }
 /* makes the folders of a file path (screenshots) */

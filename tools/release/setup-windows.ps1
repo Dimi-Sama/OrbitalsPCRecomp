@@ -25,7 +25,8 @@ param(
   [switch]$RebuildRuntime,
   [switch]$RebuildCode,
   [switch]$Rebuild,
-  [string[]]$ShaderCaptures
+  [string[]]$ShaderCaptures,
+  [string]$GameDir  # optional output folder for a staged launcher import; toolchain stays in InstallDir
 )
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -45,7 +46,7 @@ if ($ShaderCaptures) {   # checked before the long steps; a native program gets 
 }
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $InstallDir = (Resolve-Path -LiteralPath $InstallDir).Path
-$game = Join-Path $InstallDir 'Orbitals'
+$game = if ($GameDir) { [IO.Path]::GetFullPath($GameDir) } else { Join-Path $InstallDir 'Orbitals' }
 $tc = Join-Path $InstallDir 'toolchain'
 $py = Join-Path $repo 'python\python.exe'
 $gbin = Join-Path $repo 'gcc\Library\bin'
@@ -54,7 +55,7 @@ function Check($what) { if ($LASTEXITCODE) { throw "$what failed (exit code $LAS
 
 Step 1 'Python and GCC'
 if (-not (Test-Path -LiteralPath $py) -or -not (Test-Path -LiteralPath (Join-Path $gbin 'x86_64-w64-mingw32-gcc.exe'))) {
-  Push-Location $repo; try { & "$env:ComSpec" /d /c "`"$(Join-Path $repo 'Install.bat')`"" } finally { Pop-Location }   # absolute path: the process' working folder is not PowerShell's location
+  & (Join-Path $repo 'Install.bat') '--no-pause'; Check 'Install.bat'
   if (-not (Test-Path -LiteralPath $py)) { throw 'Install.bat did not leave python\python.exe' }
 } else { Write-Host '  already there' }
 
@@ -69,7 +70,9 @@ $env:VULKAN_SDK = Join-Path $repo 'runtime\edenvk\deps\vulkan-headers'
 $runtime = Join-Path $repo 'bin\runtime_win64_win32.exe'
 Push-Location $repo
 try {
-  if ($Rebuild -or $RebuildRuntime -or -not (Test-Path -LiteralPath $runtime)) {
+  $compiler = Join-Path $gbin 'x86_64-w64-mingw32-gcc.exe'
+  & $py -B switchrecomp.py --check-runtime $runtime
+  if ($Rebuild -or $RebuildRuntime -or $LASTEXITCODE) {
     & $py -B tools\build_nvn.py --jobs $Jobs; Check 'tools\build_nvn.py'
     & $py -B switchrecomp.py --build-runtime --cc (Join-Path $gbin 'x86_64-w64-mingw32-gcc.exe') --target win64 --backend win32; Check 'switchrecomp.py --build-runtime'
   } else { Write-Host "  already there: $runtime (-RebuildRuntime to make it again)" }
@@ -84,14 +87,21 @@ try {
       else { New-Item -ItemType Junction -Path $dst -Target (Join-Path $GameData $leaf) | Out-Null }
     }
   }
-  if ($Rebuild -or $RebuildCode -or -not (Test-Path -LiteralPath (Join-Path $game 'Orbitals_code.dll'))) {
-    & $py -B switchrecomp.py $GameData -o Orbitals --outdir $game --runtime $runtime --cc (Join-Path $gbin 'x86_64-w64-mingw32-gcc.exe') `
-      --target win64 --backend win32 -O 2 --jobs $Jobs; Check 'switchrecomp.py (game code)'
+  $compileArgs = @($GameData, '-o', 'Orbitals', '--outdir', $game, '--runtime', $runtime, '--cc', $compiler,
+                   '--target', 'win64', '--backend', 'win32', '-O', '2', '--jobs', $Jobs)
+  & $py -B switchrecomp.py @compileArgs --check-module
+  $reuseCode = -not ($Rebuild -or $RebuildCode -or $LASTEXITCODE)
+  if (-not $reuseCode) {
+    if ($env:ORBITALS_OBJECT_CACHE) { $compileArgs += '--object-cache', $env:ORBITALS_OBJECT_CACHE }
+    if ($env:ORBITALS_NO_COPY_DATA -eq '1') { $compileArgs += '--no-copy-data' }
+    & $py -B switchrecomp.py @compileArgs; Check 'switchrecomp.py (game code)'
   } else { Write-Host '  already there (-RebuildCode to recompile)' }
 } finally { Pop-Location }
 
 Step 5 'Completing the game folder'
-Copy-Item -LiteralPath $runtime -Destination (Join-Path $game 'Orbitals.exe') -Force
+if ($reuseCode) {
+  Copy-Item -LiteralPath $runtime -Destination (Join-Path $game 'Orbitals.exe') -Force
+}
 Copy-Item -LiteralPath (Join-Path $tc 'SDL3.dll') -Destination $game -Force
 # the runtime looks for nxshader\nxs_live.py and python\python.exe in its folder and up to three folders above it
 foreach ($link in @(@('nxshader', 'tools\nxshader'), @('python', 'python'))) {
