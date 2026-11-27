@@ -108,3 +108,20 @@ class ControlsRowsTest(LauncherWindowTest):
         self.assertEqual(ui.profiles.settings['button_layout'], 'Nintendo')
         ui.profiles.select(first)
         self.assertEqual(ui.profiles.settings['button_layout'], 'Xbox')
+
+class ResolutionRowsTest(LauncherWindowTest):
+    def test_tv_selector_save_and_reset(self):
+        from tkinter import ttk
+        ui = Launcher(self.tk, self.root / 'resolution', None)
+        ui.show('Graphics')
+        def widgets(parent):
+            for child in parent.winfo_children():
+                yield child
+                yield from widgets(child)
+        combo = next(w for w in widgets(ui.page) if isinstance(w, ttk.Combobox) and '2160p (4K)' in w.cget('values'))
+        self.assertEqual(combo.get(), '1080p (console)')
+        combo.set('2160p (4K)')
+        next(w for w in widgets(ui.page) if isinstance(w, ttk.Button) and w.cget('text') == 'Save').invoke()
+        self.assertEqual(ui.profiles.settings['tv_resolution'], '2160p (4K)')
+        next(w for w in widgets(ui.page) if isinstance(w, ttk.Button) and w.cget('text') == 'Reset').invoke()
+        self.assertEqual(ui.profiles.settings['tv_resolution'], '1080p (console)')

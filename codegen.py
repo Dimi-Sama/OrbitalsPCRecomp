@@ -233,6 +233,15 @@ def fix_undef(code, pc, w):
     return code.replace('UNDEF()', 'c->rt->undef(c,%s,%s)' % (lit(pc), lit(w)))
 
 
+# This build's FParse resolution entry is intercepted by orbitals_settings.c.
+# Known direct calls otherwise bypass the runtime dispatch table. Rebuild the module.
+def runtime_resolution_target(prog, target):
+    mod = prog.mod_of(target)
+    return (mod is not None and mod.name == "main"
+            and mod.build_id == bytes.fromhex("0f8ef52cf4eee37628f366a539d5d6ad" + "00" * 16)
+            and target - mod.base == 0x35d1740)
+
+
 def emit_function(prog, f, funcs):
     s = f.addrs; sset = set(s)
     L = f.leaders
@@ -246,11 +255,11 @@ def emit_function(prog, f, funcs):
         out.append(' goto L_%X;' % f.start)
 
     def tail(t):
-        if t in funcs: return '{ %s(c,%s); return; }' % (funcs[t].name, lit(t))
+        if t in funcs and not runtime_resolution_target(prog, t): return '{ %s(c,%s); return; }' % (funcs[t].name, lit(t))
         return '{ CALLDYN(%s); return; }' % lit(t)
 
     def call(t):
-        if t in funcs: return '%s(c,%s);' % (funcs[t].name, lit(t))
+        if t in funcs and not runtime_resolution_target(prog, t): return '%s(c,%s);' % (funcs[t].name, lit(t))
         return 'CALLDYN(%s);' % lit(t)
 
     for i, x in enumerate(s):

@@ -40,7 +40,7 @@ DEFAULT_SETTINGS = {
     "mode": "Portable", "display": "Windowed", "size": "1280x720",
     "upscale": "Standard", "vsync": True, "volume": 100, "keyboard": 1,
     "mouse_camera": None, "mouse_sensitivity": None, "vibration": True,
-    "fps": "30 (reference)", "gfx_preset": "High",
+    "fps": "30 (reference)", "gfx_preset": "High", "tv_resolution": "1080p (console)",
     "button_layout": "Nintendo", "gyro": "Off", "gyro_sensitivity_x": 1.5, "gyro_sensitivity_y": 1.5,
     "gyro_button": "Touchpad click", "gyro_button_mode": "Hold to pause", "gyro_calibrate": False,
 }
@@ -765,6 +765,7 @@ def validate_settings(settings):
             or settings["mouse_camera"] is not None and type(settings["mouse_camera"]) is not bool
             or settings["mouse_sensitivity"] is not None and (
                 type(settings["mouse_sensitivity"]) is not int or not 10 <= settings["mouse_sensitivity"] <= 500)
+            or settings["tv_resolution"] not in graphics.TV_RESOLUTIONS
             or settings["fps"] not in graphics.FPS_MODES
             or settings["button_layout"] not in BUTTON_LAYOUTS or settings["gyro"] not in GYRO_MODES
             or settings["gyro_button"] not in GYRO_BUTTONS or settings["gyro_button_mode"] not in GYRO_BUTTON_MODES
@@ -1093,10 +1094,13 @@ def launch(game, profiles):
         ini = game.root / "Orbitals.ini"
         text = ini.read_text(encoding="utf-8-sig", errors="replace") if ini.is_file() else ""
         fps = graphics.FPS_MODES[settings["fps"]]
-        keys = ("ue_fps", "button_layout", "button_accept_bottom", "gyro", "gyro_sensitivity_x", "gyro_sensitivity_y", "gyro_button",
+        keys = ("ue_fps", "display_resolution", "button_layout", "button_accept_bottom", "gyro", "gyro_sensitivity_x", "gyro_sensitivity_y", "gyro_button",
                 "gyro_button_mode", "gyro_calibrate")
         text = re.sub(rf"(?m)^\s*({'|'.join(keys)})\s*=.*$", "", text)
         text = text.rstrip() + f"\nue_fps={fps}\n"
+        tv = graphics.TV_RESOLUTIONS[settings["tv_resolution"]]
+        if tv:
+            text += f"display_resolution={tv}\n"
         if layout := BUTTON_LAYOUTS[settings["button_layout"]]:
             # Layout selects both glyphs and menu convention. Ignore the retired experimental profile checkbox.
             text += f"button_layout={layout}\nbutton_accept_bottom=1\n"

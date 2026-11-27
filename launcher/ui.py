@@ -1,7 +1,5 @@
 # SwitchRecomp - Copyright 2026 MZ Labs
 
-from .core import BUTTON_LAYOUTS, GYRO_MODES, GYRO_BUTTONS, GYRO_BUTTON_MODES, GYRO_SENSITIVITIES
-
 import os
 import queue
 import re
@@ -15,7 +13,7 @@ from tkinter import filedialog, font, messagebox, simpledialog, ttk
 from . import VERSION, graphics
 from .demo import DemoScreen
 from .neo import TitleScreen, header_strip
-from .core import (install_fraction, REPO, carry_saves, download_update, game_source, launch_kit, outdated_release, LOG, RELEASES_URL, WINDOWS, LauncherError, Profiles, check_update, detect_installation, finish_session,
+from .core import (BUTTON_LAYOUTS, GYRO_MODES, GYRO_BUTTONS, GYRO_BUTTON_MODES, GYRO_SENSITIVITIES, install_fraction, REPO, carry_saves, download_update, game_source, launch_kit, outdated_release, LOG, RELEASES_URL, WINDOWS, LauncherError, Profiles, check_update, detect_installation, finish_session,
                    gamepad_inventory, graphics_settings, install_from_files, installation, json_bytes, latest_run,
                    launch, prepare, prepare_shaders, runtime_info, shader_preparation, validate_settings)
 from .reports import ISSUE_TYPES, create_report, gpu_info, report_saves, system_info
@@ -331,7 +329,8 @@ class Launcher:
                 self.page = tk.Frame(canvas, bg=BG)
                 item = canvas.create_window(34, 14, window=self.page, anchor="nw")
                 canvas.bind("<Configure>", lambda e: canvas.itemconfigure(item, width=max(1, e.width - 68)))
-                self.page.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+                self.page.bind("<Configure>", lambda e: canvas.configure(
+                    scrollregion=(0, 0, canvas.winfo_width(), self.page.winfo_reqheight() + 28)))
             else:
                 self.page = tk.Frame(self.stage, bg=BG)
                 self.page.pack(fill="both", expand=True, padx=34, pady=(14, 0))
@@ -346,6 +345,19 @@ class Launcher:
             return
         getattr(self, {"Home": "home", "Profiles": "profile_page", "Graphics": "graphics_page", "Controls": "controls_page", "Settings": "settings_page",
                        "Support": "support_page", "Netplay": "netplay_page"}[name])()
+        if name in ("Controls", "Graphics"):
+            canvas = self.page.master
+            def reveal(event):
+                canvas.update_idletasks()
+                top = canvas.canvasy(0)
+                y = event.widget.winfo_rooty() - self.page.winfo_rooty() + 14
+                if y < top or y + event.widget.winfo_height() > top + canvas.winfo_height():
+                    canvas.yview_moveto(max(0, y - canvas.winfo_height() / 2) / (self.page.winfo_reqheight() + 28))
+            def focus_scroll(parent):
+                for child in parent.winfo_children():
+                    child.bind("<FocusIn>", reveal, add="+")
+                    focus_scroll(child)
+            focus_scroll(self.page)
         if name in ("Controls", "Graphics", "Settings") and (self.process or self.job):
             def lock(parent):
                 for child in parent.winfo_children():
@@ -826,6 +838,7 @@ class Launcher:
         gfx = graphics_settings(settings)
         preset = tk.StringVar(value=gfx["preset"])
         option_vars = {name: tk.StringVar(value=gfx.get(name, graphics.ORIGINAL)) for name in graphics.OPTIONS}
+        tv_resolution = tk.StringVar(value=settings["tv_resolution"])
         fps = tk.StringVar(value=settings["fps"])
         mode = tk.StringVar(value=settings["mode"])
         display = tk.StringVar(value=settings["display"])
@@ -878,7 +891,8 @@ class Launcher:
                 ("Display", ttk.Combobox(panel2, textvariable=display, values=("Windowed", "Borderless"), state="readonly", width=14)),
                 ("Window output size", size_control),
                 ("Upscaling filter", ttk.Combobox(panel2, textvariable=upscale, values=("Standard", "Sharp", "FSR1"), state="readonly", width=14)),
-                ("VSync", ttk.Checkbutton(panel2, variable=vsync, text="On")))
+                ("VSync", ttk.Checkbutton(panel2, variable=vsync, text="On")),
+                ("TV output resolution", ttk.Combobox(panel2, textvariable=tv_resolution, values=graphics.TV_CHOICES, state="readonly", width=24)))
         for n, (caption, control) in enumerate(rows):
             col, row = n % 3, (n // 3) * 2 + 1
             label(panel2, caption, bg=PANEL, size=9, color=MUTED).grid(row=row, column=col, sticky="w", pady=(7, 1))
@@ -890,7 +904,9 @@ class Launcher:
         def display_status(*_):
             desktop = display.get() == "Borderless"
             size_control.configure(state="disabled" if desktop else "normal")
-            messages = [graphics.FPS_WARNINGS.get(fps.get(), ""), graphics.MODE_NOTES.get(mode.get(), "")]
+            messages = ["TV output requires the companion display-resolution runtime and rebuilt game module.\n"
+                        "It applies in TV mode only; Portable keeps the console output. Restart required.",
+                        graphics.FPS_WARNINGS.get(fps.get(), ""), graphics.MODE_NOTES.get(mode.get(), "")]
             if desktop:
                 messages.append("Borderless uses the monitor's desktop resolution.")
             warning.set("\n".join(filter(None, messages)))
@@ -902,7 +918,7 @@ class Launcher:
 
         def save():
             self.guard()
-            values = {"gfx_preset": preset.get(), "fps": fps.get(), "mode": mode.get(), "display": display.get(),
+            values = {"tv_resolution": tv_resolution.get(), "gfx_preset": preset.get(), "fps": fps.get(), "mode": mode.get(), "display": display.get(),
                       "size": size.get().strip(), "upscale": upscale.get(), "vsync": bool(vsync.get())}
             if preset.get() == "Custom":
                 values |= {f"gfx_{k}": v.get() for k, v in option_vars.items()}
@@ -918,7 +934,7 @@ class Launcher:
         def reset():
             self.guard()
             current = dict(self.profiles.profile.get("settings", {}))
-            keep = {k: v for k, v in current.items() if not k.startswith("gfx_") and k not in ("fps", "mode", "display", "size", "upscale", "vsync")}
+            keep = {k: v for k, v in current.items() if not k.startswith("gfx_") and k not in ("tv_resolution", "fps", "mode", "display", "size", "upscale", "vsync")}
             self.profiles.update_active(settings=keep)
             self.page_state.set("Graphics reset (High, 30 FPS).")
             self.refresh()

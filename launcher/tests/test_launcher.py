@@ -417,7 +417,9 @@ class LocalStateTest(unittest.TestCase):
         self.assertEqual(ini["gyro_extra"], "keep")
         game = core.installation(self.native)
         self.profiles.update_active(settings={"button_layout": "Xbox", "gyro": "Always"})
-        text = (self.launch_stand_in(game)[1] / "Orbitals.ini").read_text()
+        process, run = self.launch_stand_in(game)
+        process.wait(timeout=10)
+        text = (run / "Orbitals.ini").read_text()
         for key, value in (("button_layout", "xbox"), ("gyro", "always"), ("gyro_button", "touchpad")):
             self.assertEqual(text.count(f"\n{key}="), 1)
             self.assertIn(f"\n{key}={value}\n", text)
@@ -522,3 +524,24 @@ class ReportTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class OutputResolutionTest(unittest.TestCase):
+    setUp = LocalStateTest.setUp
+    launched_ini = LocalStateTest.launched_ini
+    launch_stand_in = LocalStateTest.launch_stand_in
+
+    def test_resolution_choices_replace_only_owned_ini(self):
+        from launcher import graphics
+        original = 'display_resolution=999\nunknown_future_setting=keep\n'
+        (self.native / 'Orbitals.ini').write_text(original)
+        for name, height in graphics.TV_RESOLUTIONS.items():
+            with self.subTest(name=name):
+                ini = self.launched_ini(tv_resolution=name)
+                self.assertEqual(ini.get('display_resolution'), str(height) if height else None)
+                self.assertEqual(ini['unknown_future_setting'], 'keep')
+                self.assertEqual((self.native / 'Orbitals.ini').read_text(), original)
+        for invalid in ('4K', 2160, None, '1080p'):
+            with self.subTest(invalid=invalid), self.assertRaises(core.LauncherError):
+                core.validate_settings(core.DEFAULT_SETTINGS | {'tv_resolution': invalid})
+        self.profiles.update_active(settings={})
+        self.assertEqual(self.profiles.settings['tv_resolution'], '1080p (console)')
