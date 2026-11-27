@@ -4,6 +4,7 @@
 /* fs: RomFS (built on the fly from an extracted romfs/ folder, or a romfs.bin), plus save data and SD card mapped
    to normal folders */
 #include "rt.h"
+#include "orbitals_buttons.h"
 #include <ctype.h>
 
 #define FS_NOTFOUND RC(2,1)
@@ -123,6 +124,7 @@ static void romfs_build(const char* dir){
   { char o[1200]; snprintf(o,sizeof o,"%sromfs_overlay",g_datadir);
     romfs_overlay(o); }
   romfs_overlay(getenv("SWR_ROMFS_EXTRA_OVERLAY"));
+  romfs_overlay(orbitals_layout_overlay());
   /* table offsets */
   u32 doff=0; for(int i=0;i<ndn;i++){ dn[i].off=doff; doff+=0x18+((strlen(dn[i].name)+3)&~3u); }
   u32 foff=0; for(int i=0;i<nfn;i++){ fn[i].off=foff; foff+=0x20+((strlen(fn[i].name)+3)&~3u); }

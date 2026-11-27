@@ -15,6 +15,7 @@
 const char* g_runtime_version=SWR_RUNTIME_VERSION;
 #include "rt.h"
 #include "audio.h"
+#include "orbitals_buttons.h"
 #include <stdatomic.h>
 #include <sys/stat.h>
 static int g_opt_null_trap;   /* null_trap= in the ini */
@@ -230,6 +231,7 @@ static const char* ini_get(const char* k, const char* def){ for(int i=0;i<g_ini_
 
 static void ini_apply(const char* k, const char* v){
     if(!strcmp(k,"docked")) g_opt_docked=atoi(v);
+    else if(!strncmp(k,"button_",7)) orbitals_buttons_ini(k,v);
     else if(!strcmp(k,"language")) g_opt_lang=atoi(v);
     else if(!strcmp(k,"keyboard_text")){ extern char g_opt_swkbd[64]; snprintf(g_opt_swkbd,sizeof g_opt_swkbd,"%s",v); }
     else if(!strcmp(k,"log")) g_verbose=atoi(v);
@@ -312,6 +314,8 @@ static const IniOpt INI_DISPLAY[]={
   {NULL,NULL,NULL}};
 
 static const IniOpt INI_INPUT[]={
+  {"button_layout","nintendo","Orbitals prompts (restart required): nintendo, xbox, playstation"},
+  {"button_accept_bottom","0","With xbox/playstation: 1 = bottom accept, right back; jump stays on the bottom button"},
   {"mouse_right_stick","0","Mouse controls the right stick. F2 toggles mouse capture. IJKL also controls the right stick."},
   {"mouse_sensitivity","1.00","Mouse sensitivity: F1 10%..500% goes from 5x to 1250x speed, on a curve so 100% stays close to before"},
   {"mouse_invert","0","Mouse inversion: 0 = normal, 1 = horizontal, 2 = vertical, 3 = both"},
@@ -466,6 +470,16 @@ const SwrModule* swr_module_static(void) __attribute__((weak));
 #endif
 int g_code_tcc;
 
+static void* g_code_dl;
+
+/* 1 when the code module was generated with guest calls to pc going through the dispatch table (codegen.py DYNAMIC_CALLS), so a
+   g_disp replacement for pc also sees the game's direct calls */
+int code_dynamic_call(u64 pc){
+  const u64* l= g_code_dl? (const u64*)plat_dl_sym(g_code_dl,"swr_dynamic_calls") : NULL;
+  for(;l && *l;l++) if(*l==pc) return 1;
+  return 0;
+}
+
 static int load_code(void){
   if(swr_module_static){ g_mod=swr_module_static(); return g_mod? 0 : -1; }
   char p[1200];
@@ -481,6 +495,7 @@ static int load_code(void){
 #endif
     WARN("Cannot find the recompiled code: %s\n",p); return -1; }
   ModFn f=(ModFn)plat_dl_sym(h,"swr_module"); if(!f){ WARN("%s is not a SwitchRecomp module\n",p); return -1; }
+  g_code_dl=h;
 #if defined(_WIN32)
   { /* tell gcc builds from tcc builds by the PE linker version (ld 2.x vs tcc 6.0). tcc code is a lot slower */
     const u8* b=(const u8*)h; u32 lf; memcpy(&lf,b+0x3C,4); u8 mj=b[lf+24+2], mn=b[lf+24+3];

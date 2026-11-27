@@ -1,5 +1,6 @@
 /* Orbitals PC Recomp, based on SwitchRecomp by MZ Labs. AGPL-3.0, see LICENSE.txt and NOTICE.txt. */
 #include "rt.h"
+#include "orbitals_buttons.h"
 
 /* The validated main build reads its secondary screen percentage from a float returned by AsVariableFloat.
    The float is read on the game thread while preparing each viewport. Zero selects Unreal's original policy. */
@@ -53,6 +54,7 @@ void orbitals_scene_init(void){
 #ifdef _WIN32
     orbitals_widget_install(mod);
 #endif
+    orbitals_buttons_install(mod);
     if(mod->size<0x9c48a38 || mod->text_size<0x2ddc5c8) return;
     u64 load=mod->base+0x2ddc5bc;
     if(gr32(load)!=0x90037368 || gr32(load+4)!=0xf9451908 || gr32(load+8)!=0xbd400100) return;
